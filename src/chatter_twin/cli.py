@@ -366,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest_icnc.add_argument("--default-sample-rate", type=float, default=10_000.0)
     ingest_icnc.add_argument("--default-spindle-rpm", type=float, default=9_000.0)
     ingest_icnc.add_argument("--default-feed-per-tooth", type=float, default=45.0e-6)
+    ingest_icnc.add_argument("--include-unknown", action="store_true")
     ingest_icnc.add_argument("--max-packages-per-file", type=int, default=None)
     ingest_icnc.add_argument("--max-windows", type=int, default=None)
 
@@ -1153,6 +1154,7 @@ def _cmd_ingest_icnc(args: argparse.Namespace) -> int:
             default_sample_rate_hz=args.default_sample_rate,
             default_spindle_rpm=args.default_spindle_rpm,
             default_feed_per_tooth_m=args.default_feed_per_tooth,
+            include_unknown=args.include_unknown,
             max_packages_per_file=args.max_packages_per_file,
             max_windows=args.max_windows,
         ),

@@ -123,7 +123,10 @@ label becomes `slight` or `severe`.
 `chatter-twin icnc-manifest`, `download-icnc`, and `ingest-icnc` support the
 first public real-data validation pass against the i-CNC Zenodo dataset. The
 raw download is about 3 GB and is kept under ignored `data/`; imported replay
-subsets are written under ignored `results/`. See `docs/REAL_DATASETS.md`.
+subsets are written under ignored `results/`. `ingest-icnc` skips
+`No Machining`/unknown packages by default; pass `--include-unknown` only when
+you want an operational-state dataset instead of cutting-only validation data.
+See `docs/REAL_DATASETS.md`.
 
 ## Offline Risk Training
 

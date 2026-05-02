@@ -48,6 +48,7 @@ class ICNCIngestConfig:
     default_sample_rate_hz: float = 10_000.0
     default_spindle_rpm: float = 9_000.0
     default_feed_per_tooth_m: float = 45.0e-6
+    include_unknown: bool = False
     max_packages_per_file: int | None = None
     max_windows: int | None = None
 
@@ -265,6 +266,9 @@ def _ingest_icnc_csv(
             sample_rate_hz = _positive_float(row.get("fs"), config.default_sample_rate_hz)
             spindle_rpm = _positive_float(row.get("spindlespeed"), config.default_spindle_rpm)
             label = _status_to_label(row.get("status", "unknown"))
+            if label == "unknown" and not config.include_unknown:
+                skipped_packages += 1
+                continue
             package_windows, package_records, previous = _slice_icnc_package(
                 sensor_signal=np.column_stack([x_channel, y_channel]),
                 scenario=Path(csv_source.path).stem,
@@ -510,7 +514,7 @@ def _status_to_label(value: str | None) -> str:
     if value is None:
         return "unknown"
     text = str(value).strip().lower()
-    if text in {"", "unknown", "nan", "none", "null", "-1"}:
+    if text in {"", "unknown", "nan", "none", "null", "-1", "no machining", "nomachining", "sensorerror", "sensor error"}:
         return "unknown"
     if text in {"0", "false", "no", "normal", "stable", "non-chatter", "non_chatter", "nochatter"}:
         return "stable"

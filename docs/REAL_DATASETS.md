@@ -51,6 +51,11 @@ uv run chatter-twin ingest-icnc \
   --max-packages-per-file 1000
 ```
 
+By default the importer skips `No Machining`, `SensorError`, and other unknown
+status rows so the first replay dataset is cutting-only. Add
+`--include-unknown` only when you intentionally want a raw operational-state
+dataset with `unknown` labels preserved.
+
 Then train a first real-data signal baseline:
 
 ```bash

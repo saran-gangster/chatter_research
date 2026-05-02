@@ -110,6 +110,32 @@ def test_cli_icnc_manifest_and_ingest(tmp_path: Path):
     assert saved_manifest["total_windows"] == 3
 
 
+def test_ingest_icnc_skips_unknown_rows_by_default(tmp_path: Path):
+    source = tmp_path / "test_unknown_status.csv"
+    _write_unknown_icnc_csv(source)
+
+    cut_only = ingest_icnc_dataset(
+        source=source,
+        out_dir=tmp_path / "cut_only",
+        config=ICNCIngestConfig(window_s=0.008, stride_s=0.004, default_sample_rate_hz=1_000.0),
+    )
+    assert cut_only["manifest"]["label_counts"] == {"stable": 3}
+    assert cut_only["sources"][0]["packages_read"] == 2
+    assert cut_only["sources"][0]["packages_skipped"] == 1
+
+    with_unknown = ingest_icnc_dataset(
+        source=source,
+        out_dir=tmp_path / "with_unknown",
+        config=ICNCIngestConfig(
+            window_s=0.008,
+            stride_s=0.004,
+            default_sample_rate_hz=1_000.0,
+            include_unknown=True,
+        ),
+    )
+    assert with_unknown["manifest"]["label_counts"] == {"stable": 3, "unknown": 3}
+
+
 def _write_vector_icnc_csv(path: Path) -> None:
     rows = [
         {
@@ -154,3 +180,30 @@ def _write_expanded_icnc_csv(path: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerow(row)
+
+
+def _write_unknown_icnc_csv(path: Path) -> None:
+    rows = [
+        {
+            "timestamp": "2026-01-01T00:00:00",
+            "fs": "1000",
+            "numscans": "16",
+            "spindlespeed": "6000",
+            "x_channel": " ".join(str(value) for value in range(16)),
+            "y_channel": " ".join(str(value * 0.5) for value in range(16)),
+            "status": "No Machining",
+        },
+        {
+            "timestamp": "2026-01-01T00:00:01",
+            "fs": "1000",
+            "numscans": "16",
+            "spindlespeed": "6000",
+            "x_channel": " ".join(str(value) for value in range(16)),
+            "y_channel": " ".join(str(value * 0.5) for value in range(16)),
+            "status": "Stable",
+        },
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
