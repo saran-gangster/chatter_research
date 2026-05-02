@@ -216,21 +216,27 @@ def test_ingest_kit_mat_directory(tmp_path: Path):
     _write_minimal_kit_source(source)
     for trial in ("IM-01F", "IM-02F-A01"):
         mat_path = source / "Dataset" / "Injection mold" / trial / "processed_data" / f"{trial}_synchronized.mat"
-        _write_minimal_kit_mat(h5py, mat_path, ["xAcceleration", "yAcceleration"])
+        _write_minimal_kit_mat(h5py, mat_path, ["xAcceleration", "yAcceleration", "xForce"])
 
     payload = ingest_kit_mat_dataset(
         source=source,
         out_dir=tmp_path / "kit_mat_out",
         trials=["IM-01F", "IM-02F-A01"],
-        config=KITMatIngestConfig(window_s=0.4, stride_s=0.4, horizon_s=0.8),
+        config=KITMatIngestConfig(
+            window_s=0.4,
+            stride_s=0.4,
+            horizon_s=0.8,
+            signal_names=("xAcceleration", "yAcceleration", "xForce"),
+            standardize_signals=True,
+        ),
     )
 
     assert payload["manifest"]["total_windows"] == 4
     assert payload["manifest"]["sample_rate_hz"] == 10.0
     assert payload["manifest"]["label_counts"] == {"slight": 2, "stable": 2}
     data = np.load(tmp_path / "kit_mat_out" / "dataset.npz")
-    assert data["sensor_windows"].shape == (4, 4, 2)
-    assert data["channel_names"].tolist() == ["xAcceleration", "yAcceleration"]
+    assert data["sensor_windows"].shape == (4, 4, 3)
+    assert data["channel_names"].tolist() == ["xAcceleration", "yAcceleration", "xForce"]
 
 
 def _write_vector_icnc_csv(path: Path) -> None:

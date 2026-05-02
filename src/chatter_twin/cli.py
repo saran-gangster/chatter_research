@@ -425,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest_kit_mat.add_argument("--stride", type=float, default=0.05)
     ingest_kit_mat.add_argument("--horizon", type=float, default=0.25)
     ingest_kit_mat.add_argument("--signal-names", default="xAcceleration,yAcceleration")
+    ingest_kit_mat.add_argument("--standardize-signals", action="store_true")
     ingest_kit_mat.add_argument("--include-other-anomalies", action="store_true")
     ingest_kit_mat.add_argument("--max-windows", type=int, default=None)
     ingest_kit_mat.add_argument("--max-samples-per-trial", type=int, default=None)
@@ -1338,6 +1339,7 @@ def _cmd_ingest_kit_mat(args: argparse.Namespace) -> int:
             stride_s=args.stride,
             horizon_s=args.horizon,
             signal_names=signal_names,  # type: ignore[arg-type]
+            standardize_signals=args.standardize_signals,
             include_other_anomalies=args.include_other_anomalies,
             max_windows=args.max_windows,
             max_samples_per_trial=args.max_samples_per_trial,

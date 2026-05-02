@@ -112,7 +112,8 @@ class KITMatIngestConfig:
     window_s: float = 0.10
     stride_s: float = 0.05
     horizon_s: float = 0.25
-    signal_names: tuple[str, str] = ("xAcceleration", "yAcceleration")
+    signal_names: tuple[str, ...] = ("xAcceleration", "yAcceleration")
+    standardize_signals: bool = False
     include_other_anomalies: bool = False
     max_windows: int | None = None
     max_samples_per_trial: int | None = None
@@ -124,8 +125,8 @@ class KITMatIngestConfig:
             raise ValueError("stride_s must be positive")
         if self.horizon_s <= 0:
             raise ValueError("horizon_s must be positive")
-        if len(self.signal_names) != 2:
-            raise ValueError("signal_names must contain exactly two signals")
+        if not self.signal_names:
+            raise ValueError("signal_names cannot be empty")
         if self.max_windows is not None and self.max_windows < 1:
             raise ValueError("max_windows must be at least 1")
         if self.max_samples_per_trial is not None and self.max_samples_per_trial < 4:
@@ -835,6 +836,8 @@ def _ingest_kit_mat_trial(
         if config.max_samples_per_trial is not None:
             sample_count = min(sample_count, config.max_samples_per_trial)
         signal = np.column_stack([channel[:sample_count] for channel in channels])
+        if config.standardize_signals:
+            signal = _standardize_signal_columns(signal)
         sample_rate_hz = float(table["sample_rate_hz"])
         available_signals = sorted(table["signals"])
         units = {name: table["units"].get(name, "") for name in config.signal_names}
@@ -909,6 +912,14 @@ def _read_kit_mat_timetable(handle: object) -> dict[str, object]:
     }
 
 
+def _standardize_signal_columns(signal: NDArray[np.float64]) -> NDArray[np.float64]:
+    center = np.median(signal, axis=0)
+    mad = np.median(np.abs(signal - center), axis=0)
+    q25, q75 = np.quantile(signal, [0.25, 0.75], axis=0)
+    scale = np.maximum.reduce([1.4826 * mad, (q75 - q25) / 1.349, np.full(signal.shape[1], 1.0e-9)])
+    return (signal - center) / scale
+
+
 def _h5_deref_string(handle: object, ref: object) -> str:
     array = np.asarray(handle[ref])
     if array.dtype.kind not in {"u", "i"}:
@@ -936,6 +947,7 @@ def _kit_mat_trial_summary(
         "samples_read": samples_read,
         "windows": windows,
         "signal_names": list(config.signal_names),
+        "standardized": config.standardize_signals,
         "signal_units": units,
         "sample_rate_hz": sample_rate_hz,
         "available_signal_count": len(available_signals),
@@ -1403,6 +1415,7 @@ def _kit_mat_manifest(
             "dataset": "kit_industrial_radar_hvvwn1kfwf7qt48z",
             "max_windows": config.max_windows,
             "max_samples_per_trial": config.max_samples_per_trial,
+            "standardize_signals": config.standardize_signals,
             "source_files": source_summaries,
             "modality": "synchronized MATLAB timetable",
             "note": "DoE comments provide coarse trial-level labels; no time-local onset labels are available yet.",
@@ -1534,7 +1547,8 @@ def _write_kit_mat_readme(
         f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
         f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
         f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
-        f"Signals: `{config.signal_names[0]}`, `{config.signal_names[1]}`",
+        "Signals: " + ", ".join(f"`{name}`" for name in config.signal_names),
+        f"Robust standardized signals: `{config.standardize_signals}`",
         "",
         "## Label Counts",
         "",
