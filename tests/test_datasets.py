@@ -181,6 +181,8 @@ def test_cli_inspect_and_ingest_bosch_cnc(tmp_path: Path):
             "0.2",
             "--sample-rate",
             "10",
+            "--max-files-per-quality",
+            "1",
             "--max-windows",
             "3",
         ]

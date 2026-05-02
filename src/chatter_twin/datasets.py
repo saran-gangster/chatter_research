@@ -175,6 +175,7 @@ class BoschCNCIngestConfig:
     spindle_rpm: float = 9_000.0
     flute_count: int = 4
     max_files: int | None = None
+    max_files_per_quality: int | None = None
     max_windows: int | None = None
 
     def __post_init__(self) -> None:
@@ -192,6 +193,8 @@ class BoschCNCIngestConfig:
             raise ValueError("flute_count must be at least 1")
         if self.max_files is not None and self.max_files < 1:
             raise ValueError("max_files must be at least 1")
+        if self.max_files_per_quality is not None and self.max_files_per_quality < 1:
+            raise ValueError("max_files_per_quality must be at least 1")
         if self.max_windows is not None and self.max_windows < 1:
             raise ValueError("max_windows must be at least 1")
 
@@ -641,6 +644,11 @@ def ingest_bosch_cnc_dataset(
         candidates = [item for item in candidates if item["machine"] in selected_machines]
     if selected_operations:
         candidates = [item for item in candidates if item["operation"] in selected_operations]
+    if config.max_files_per_quality is not None:
+        capped: list[dict[str, object]] = []
+        for quality in ("good", "bad"):
+            capped.extend([item for item in candidates if item["quality"] == quality][: config.max_files_per_quality])
+        candidates = capped
     if config.max_files is not None:
         candidates = candidates[: config.max_files]
 
@@ -2061,6 +2069,7 @@ def _bosch_cnc_manifest(
             "kaggle_ref": BOSCH_CNC_KAGGLE_REF,
             "github_url": BOSCH_CNC_GITHUB_URL,
             "max_files": config.max_files,
+            "max_files_per_quality": config.max_files_per_quality,
             "max_windows": config.max_windows,
             "source_files": source_summaries,
             "modality": "2 kHz triaxial acceleration windows",
@@ -2305,6 +2314,7 @@ def _write_bosch_cnc_readme(
             f"- `spindle_rpm`: `{config.spindle_rpm}`",
             f"- `flute_count`: `{config.flute_count}`",
             f"- `max_files`: `{config.max_files}`",
+            f"- `max_files_per_quality`: `{config.max_files_per_quality}`",
             f"- `max_windows`: `{config.max_windows}`",
             "",
             "## Caveats",

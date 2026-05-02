@@ -493,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest_bosch.add_argument("--spindle-rpm", type=float, default=9_000.0)
     ingest_bosch.add_argument("--flute-count", type=int, default=4)
     ingest_bosch.add_argument("--max-files", type=int, default=None)
+    ingest_bosch.add_argument("--max-files-per-quality", type=int, default=None)
     ingest_bosch.add_argument("--max-windows", type=int, default=None)
 
     eval_rl = subparsers.add_parser("eval-rl-run")
@@ -1603,6 +1604,7 @@ def _cmd_ingest_bosch_cnc(args: argparse.Namespace) -> int:
             spindle_rpm=args.spindle_rpm,
             flute_count=args.flute_count,
             max_files=args.max_files,
+            max_files_per_quality=args.max_files_per_quality,
             max_windows=args.max_windows,
         ),
     )
