@@ -18,7 +18,7 @@ scaffold with no CNC hardware writes and no live-machine dependency.
 - Fixed, rule-based, SLD-aware, counterfactual-risk, hybrid risk/margin, and
   lookahead MPC-style controller baselines.
 - Synthetic replay-window export with optional domain randomization.
-- i-CNC, KIT, and Purdue public dataset helpers for first real-data
+- i-CNC, KIT, Purdue, and Bosch public dataset helpers for first real-data
   signal-validation and pipeline stress-test passes.
 - Offline shadow-mode recommendation, counterfactual replay, and action-sweep
   evaluation from risk-model predictions.
@@ -51,6 +51,8 @@ rtk uv run chatter-twin download-icnc --out "data/raw/icnc/i-CNC Dataset.zip" --
 rtk uv run chatter-twin ingest-icnc --source "data/raw/icnc/i-CNC Dataset.zip" --out results/icnc_replay_subset --window 0.1 --stride 0.05 --horizon 0.25 --max-packages-per-file 1000
 rtk uv run chatter-twin real-data-benchmark --out results/real_data_benchmark_current
 rtk uv run chatter-twin risk-error-analysis --model-dir results/mt_cutting_sensor0_current_scenario_baseline_12k --out results/mt_cutting_sensor0_scenario_error_analysis_12k --group-column scenario
+rtk uv run chatter-twin inspect-bosch-cnc --source data/raw/kaggle/cnc-machining-data --out data/raw/kaggle/cnc-machining-data/inspection.json
+rtk uv run chatter-twin ingest-bosch-cnc --source data/raw/kaggle/cnc-machining-data --out results/bosch_cnc_balanced_replay_20files_per_quality --max-files-per-quality 20
 rtk uv run chatter-twin train-risk --dataset results/synthetic_replay_demo --out results/risk_model_demo --epochs 800
 rtk uv run chatter-twin train-risk --dataset results/synthetic_randomized_demo --out results/risk_model_axial_depth_holdout_demo --epochs 800 --split-mode parameter_family --holdout-column axial_depth_scale --holdout-tail high
 rtk uv run chatter-twin train-risk --dataset results/synthetic_onset_demo --out results/risk_model_hist_gb_interaction_onset_horizon_episode_validated_demo --model hist_gb --calibration none --feature-set interaction_temporal --target horizon --split-mode episode --validation-fraction 0.25
@@ -132,12 +134,12 @@ See `docs/REAL_DATASETS.md`.
 
 `chatter-twin real-data-benchmark` collects completed public-data risk-model
 runs into one claim-bounded table. The default table currently covers i-CNC,
-KIT row/time-block checks, and Purdue sensor-specific audio baselines. Missing
-result directories are skipped so the same command can run locally or on the
-data machine. `chatter-twin risk-error-analysis` reads a trained model's
-`predictions.csv` and writes label metrics, confusion pairs, and per-scenario
-failure tables; the current best use is diagnosing the Purdue unseen-experiment
-holdout.
+KIT row/time-block checks, Purdue sensor-specific audio baselines, and the Bosch
+industrial CNC anomaly bridge. Missing result directories are skipped so the
+same command can run locally or on the data machine. `chatter-twin
+risk-error-analysis` reads a trained model's `predictions.csv` and writes label
+metrics, confusion pairs, and per-scenario failure tables; the current best use
+is diagnosing the Purdue unseen-experiment holdout.
 
 ## Offline Risk Training
 

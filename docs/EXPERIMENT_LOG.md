@@ -3768,3 +3768,102 @@ sensor-specific Purdue baseline that beats naive sensor fusion on chatter F1,
 and a clear KIT time-block conclusion. KIT remains a pipeline and
 early-warning stress test, while Purdue is the better public current-window
 audio validation bridge until real synchronized intervention data is collected.
+
+## 2026-05-02 - Kaggle Search And Bosch CNC Anomaly Bridge
+
+Searched Kaggle for a stronger public dataset. The direct query
+`CNC milling chatter` returned no datasets. The useful Kaggle candidates were
+mostly tool-wear or generic CNC vibration/anomaly datasets:
+
+| Candidate | Size | Useful for this project | Limitation |
+|---|---:|---|---|
+| `maximilianfellhuber/cnc-machining-data` | 928 MB zip / 2.8 GB unpacked | real industrial CNC triaxial vibration with good/bad labels | not chatter-specific |
+| `grzegorzpiecuch/cnc-milling` | 26 GB | tool-life drift, vibration/current over 14 tools | tool wear, not chatter |
+| `rabahba/phm-data-challenge-2010` | 6.8 GB | PHM milling/tool condition benchmark | tool wear/RUL framing |
+| NASA milling Kaggle mirrors | small to medium | classic wear/AE/current/vibration context | sparse wear labels, not chatter control |
+
+Downloaded the Bosch CNC machining data on the remote data machine using the
+provided Kaggle key:
+
+```bash
+uv run --with kaggle kaggle datasets download \
+  maximilianfellhuber/cnc-machining-data \
+  -p data/raw/kaggle/cnc-machining-data \
+  --unzip
+```
+
+Inspection:
+
+| Item | Value |
+|---|---:|
+| CSV recordings | 1,702 |
+| good recordings | 1,632 |
+| bad recordings | 70 |
+| machines | `M01`, `M02`, `M03` |
+| operations | 44 machine-operation groups |
+| raw channels | `x,y,z` triaxial vibration |
+
+Added reusable importer commands:
+
+```bash
+uv run chatter-twin inspect-bosch-cnc \
+  --source data/raw/kaggle/cnc-machining-data \
+  --out data/raw/kaggle/cnc-machining-data/inspection.json
+
+uv run chatter-twin ingest-bosch-cnc \
+  --source data/raw/kaggle/cnc-machining-data \
+  --out results/bosch_cnc_balanced_replay_20files_per_quality \
+  --window 0.25 \
+  --stride 0.125 \
+  --horizon 0.5 \
+  --sample-rate 2000 \
+  --max-files-per-quality 20
+```
+
+The first naive `--max-windows 20000` ingest produced only stable windows
+because sorted files reached the cap before any `bad` recordings. I added
+`--max-files-per-quality` so small Bosch subsets can deliberately include both
+classes.
+
+Balanced subset:
+
+| Item | Value |
+|---|---:|
+| source recordings | 40 |
+| stable windows | 21,355 |
+| severe/anomaly windows | 6,286 |
+| total windows | 27,641 |
+
+Episode-held-out baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/bosch_cnc_balanced_replay_20files_per_quality \
+  --out results/bosch_cnc_balanced_episode_baseline_20files_per_quality \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode episode \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 531
+```
+
+| Split | Accuracy | Macro F1 | Anomaly F1 |
+|---|---:|---:|---:|
+| train | 0.991 | 0.988 | 0.982 |
+| validation | 0.984 | 0.976 | 0.963 |
+| test | 0.980 | 0.968 | 0.949 |
+
+Scenario/operation-held-out baseline:
+
+| Split | Accuracy | Macro F1 | Anomaly F1 |
+|---|---:|---:|---:|
+| train | 0.994 | 0.990 | 0.983 |
+| validation | 0.320 | 0.484 | 0.484 |
+| test | 0.722 | 0.839 | 0.839 |
+
+Lesson: Bosch is the best Kaggle bridge found so far for real industrial
+vibration domain shift and anomaly robustness. It is not a better
+chatter-control dataset than Purdue/i-CNC because the `bad` label is generic
+industrial anomaly, not chatter-specific and not time-local onset.

@@ -70,6 +70,12 @@ DEFAULT_REAL_DATA_RUNS: tuple[RealDataRunSpec, ...] = (
         result_dir=Path("results/mt_cutting_3sensor_current_scenario_baseline_12k"),
         claim_allowed="sensor-fusion diagnostic; not current champion on experiment holdout",
     ),
+    RealDataRunSpec(
+        dataset="Bosch CNC machining",
+        modality="2 kHz triaxial vibration",
+        result_dir=Path("results/bosch_cnc_balanced_episode_baseline_20files_per_quality"),
+        claim_allowed="industrial anomaly/domain-shift benchmark only; not chatter-specific",
+    ),
 )
 
 

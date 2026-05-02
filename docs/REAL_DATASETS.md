@@ -7,6 +7,7 @@
 | i-CNC Zenodo | current-window chatter signal validation | real 10 kHz vibration plus chatter status | package-level labels, no process depth/feed/FRF/context |
 | KIT industrial CNC milling | process-context/anomaly validation | continuous controller data, force, acceleration, NC/CAD, anomaly documentation | 44.6 GB tar, still not closed-loop intervention data |
 | Purdue MT cutting sound | external audio chatter validation | many labeled cutting paths with 48 kHz sound and operator chatter labels | path-level labels, no force/FRF/surface validation or interventions |
+| Bosch CNC machining | industrial anomaly/domain-shift validation | 2 kHz triaxial vibration from real CNC machines, good/bad recording labels | anomaly labels are not chatter-specific and have no intervention timing |
 
 ## i-CNC Zenodo
 
@@ -537,3 +538,76 @@ Interpretation: Purdue gives a much better multi-cut public chatter benchmark
 than KIT for current-window signal validation. It still does not solve
 early-warning validation because labels are per cutting path, not onset
 timestamps.
+
+## Bosch CNC Machining Vibration Dataset
+
+Kaggle search did not surface a better chatter-specific dataset than i-CNC or
+Purdue. The most useful Kaggle bridge found was Bosch's industrial CNC
+machining vibration dataset:
+
+- Kaggle mirror: <https://www.kaggle.com/datasets/maximilianfellhuber/cnc-machining-data>
+- Upstream repository: <https://github.com/boschresearch/CNC_Machining>
+- Payload inspected on the data machine: 1,702 CSV recordings, 1,632 `good`
+  and 70 `bad`.
+- Machines: `M01`, `M02`, `M03`.
+- Data: 2 kHz triaxial acceleration (`x,y,z`).
+
+Download with Kaggle CLI on the data machine:
+
+```bash
+uv run --with kaggle kaggle datasets download \
+  maximilianfellhuber/cnc-machining-data \
+  -p data/raw/kaggle/cnc-machining-data \
+  --unzip
+```
+
+Inspect and import a balanced subset:
+
+```bash
+uv run chatter-twin inspect-bosch-cnc \
+  --source data/raw/kaggle/cnc-machining-data \
+  --out data/raw/kaggle/cnc-machining-data/inspection.json
+
+uv run chatter-twin ingest-bosch-cnc \
+  --source data/raw/kaggle/cnc-machining-data \
+  --out results/bosch_cnc_balanced_replay_20files_per_quality \
+  --window 0.25 \
+  --stride 0.125 \
+  --horizon 0.5 \
+  --sample-rate 2000 \
+  --max-files-per-quality 20
+```
+
+Balanced subset summary:
+
+| Item | Value |
+|---|---:|
+| Source recordings | 40 |
+| Stable windows | 21,355 |
+| Severe/anomaly windows | 6,286 |
+| Total windows | 27,641 |
+
+Episode-held-out anomaly baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/bosch_cnc_balanced_replay_20files_per_quality \
+  --out results/bosch_cnc_balanced_episode_baseline_20files_per_quality \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode episode \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 531
+```
+
+| Split | Accuracy | Macro F1 | Anomaly F1 |
+|---|---:|---:|---:|
+| train | 0.991 | 0.988 | 0.982 |
+| validation | 0.984 | 0.976 | 0.963 |
+| test | 0.980 | 0.968 | 0.949 |
+
+Interpretation: Bosch is useful for industrial vibration domain-shift and
+generic anomaly robustness. It is not a better chatter-control dataset because
+`bad` is not a chatter-specific or time-local onset label.
