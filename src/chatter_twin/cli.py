@@ -18,6 +18,13 @@ from chatter_twin.counterfactual import (
     run_shadow_counterfactual,
     run_stability_margin_shadow_policy,
 )
+from chatter_twin.datasets import (
+    ICNC_FILENAME,
+    ICNCIngestConfig,
+    download_icnc_dataset,
+    ingest_icnc_dataset,
+    write_icnc_source_manifest,
+)
 from chatter_twin.controllers import make_controller
 from chatter_twin.demo import InternalDemoConfig, write_internal_demo_report
 from chatter_twin.dynamics import simulate_milling
@@ -340,6 +347,28 @@ def main(argv: list[str] | None = None) -> int:
     internal_demo.add_argument("--counterfactual-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.counterfactual_dir)
     internal_demo.add_argument("--test-status", default="")
 
+    icnc_manifest = subparsers.add_parser("icnc-manifest")
+    icnc_manifest.add_argument("--out", type=Path, required=True)
+
+    download_icnc = subparsers.add_parser("download-icnc")
+    download_icnc.add_argument("--out", type=Path, default=Path("data/raw/icnc") / ICNC_FILENAME)
+    download_icnc.add_argument("--manifest-out", type=Path, default=Path("data/raw/icnc/source_manifest.json"))
+    download_icnc.add_argument("--force", action="store_true")
+
+    ingest_icnc = subparsers.add_parser("ingest-icnc")
+    ingest_icnc.add_argument("--source", type=Path, required=True)
+    ingest_icnc.add_argument("--out", type=Path, required=True)
+    ingest_icnc.add_argument("--window", type=float, default=0.10)
+    ingest_icnc.add_argument("--stride", type=float, default=0.05)
+    ingest_icnc.add_argument("--horizon", type=float, default=0.25)
+    ingest_icnc.add_argument("--flutes", type=int, default=4)
+    ingest_icnc.add_argument("--modal-frequency", type=float, default=None)
+    ingest_icnc.add_argument("--default-sample-rate", type=float, default=10_000.0)
+    ingest_icnc.add_argument("--default-spindle-rpm", type=float, default=9_000.0)
+    ingest_icnc.add_argument("--default-feed-per-tooth", type=float, default=45.0e-6)
+    ingest_icnc.add_argument("--max-packages-per-file", type=int, default=None)
+    ingest_icnc.add_argument("--max-windows", type=int, default=None)
+
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
     eval_rl.add_argument("--scenarios", default="stable,near_boundary,onset,unstable")
@@ -452,6 +481,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_gate_rl_shadow(args)
         case "internal-demo-report":
             return _cmd_internal_demo_report(args)
+        case "icnc-manifest":
+            return _cmd_icnc_manifest(args)
+        case "download-icnc":
+            return _cmd_download_icnc(args)
+        case "ingest-icnc":
+            return _cmd_ingest_icnc(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1069,6 +1104,69 @@ def _cmd_internal_demo_report(args: argparse.Namespace) -> int:
                 "readiness": payload["readiness"]["status"],
                 "hardware_ready": payload["conclusion"]["hardware_ready"],
                 "gate_statuses": {row["profile"]: row["status"] for row in payload["promotion_gates"]},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_icnc_manifest(args: argparse.Namespace) -> int:
+    manifest = write_icnc_source_manifest(args.out)
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "record_url": manifest["record_url"],
+                "filename": manifest["filename"],
+                "size_bytes": manifest["size_bytes"],
+                "md5": manifest["md5"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_download_icnc(args: argparse.Namespace) -> int:
+    payload = download_icnc_dataset(
+        out_path=args.out,
+        manifest_path=args.manifest_out,
+        skip_existing=not args.force,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_ingest_icnc(args: argparse.Namespace) -> int:
+    payload = ingest_icnc_dataset(
+        source=args.source,
+        out_dir=args.out,
+        config=ICNCIngestConfig(
+            window_s=args.window,
+            stride_s=args.stride,
+            horizon_s=args.horizon,
+            flute_count=args.flutes,
+            modal_frequency_hz=args.modal_frequency,
+            default_sample_rate_hz=args.default_sample_rate,
+            default_spindle_rpm=args.default_spindle_rpm,
+            default_feed_per_tooth_m=args.default_feed_per_tooth,
+            max_packages_per_file=args.max_packages_per_file,
+            max_windows=args.max_windows,
+        ),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "sources": payload["sources"],
+                "artifacts": payload["artifacts"],
             },
             indent=2,
             sort_keys=True,

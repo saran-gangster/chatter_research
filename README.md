@@ -18,6 +18,8 @@ scaffold with no CNC hardware writes and no live-machine dependency.
 - Fixed, rule-based, SLD-aware, counterfactual-risk, hybrid risk/margin, and
   lookahead MPC-style controller baselines.
 - Synthetic replay-window export with optional domain randomization.
+- i-CNC Zenodo dataset manifest/download/import helpers for a first real-data
+  signal-validation pass.
 - Offline shadow-mode recommendation, counterfactual replay, and action-sweep
   evaluation from risk-model predictions.
 - Reproducible internal demo report that summarizes calibration, risk,
@@ -44,6 +46,9 @@ rtk uv run chatter-twin export-synthetic --episodes 3 --duration 1.0 --window 0.
 rtk uv run chatter-twin export-synthetic --episodes 4 --duration 0.6 --window 0.1 --stride 0.05 --randomize --out results/synthetic_randomized_demo
 rtk uv run chatter-twin export-synthetic --scenarios stable,near_boundary,unstable --episodes 4 --duration 0.6 --window 0.1 --stride 0.05 --randomize --focus-transitions --transition-candidates 12 --min-transition-windows 3 --horizon 0.2 --out results/synthetic_transition_focus_demo
 rtk uv run chatter-twin export-synthetic --scenarios stable,near_boundary,onset,unstable --episodes 4 --duration 0.9 --window 0.1 --stride 0.05 --randomize --focus-transitions --transition-candidates 12 --min-transition-windows 3 --horizon 0.25 --out results/synthetic_onset_demo
+rtk uv run chatter-twin icnc-manifest --out data/raw/icnc/source_manifest.json
+rtk uv run chatter-twin download-icnc --out "data/raw/icnc/i-CNC Dataset.zip" --manifest-out data/raw/icnc/source_manifest.json
+rtk uv run chatter-twin ingest-icnc --source "data/raw/icnc/i-CNC Dataset.zip" --out results/icnc_replay_subset --window 0.1 --stride 0.05 --horizon 0.25 --max-packages-per-file 1000
 rtk uv run chatter-twin train-risk --dataset results/synthetic_replay_demo --out results/risk_model_demo --epochs 800
 rtk uv run chatter-twin train-risk --dataset results/synthetic_randomized_demo --out results/risk_model_axial_depth_holdout_demo --epochs 800 --split-mode parameter_family --holdout-column axial_depth_scale --holdout-tail high
 rtk uv run chatter-twin train-risk --dataset results/synthetic_onset_demo --out results/risk_model_hist_gb_interaction_onset_horizon_episode_validated_demo --model hist_gb --calibration none --feature-set interaction_temporal --target horizon --split-mode episode --validation-fraction 0.25
@@ -114,6 +119,11 @@ boundary. Exports also include horizon/onset targets; set `--horizon` to control
 the early-warning window. Include the `onset` scenario when you need progressive
 stable-to-chatter episodes with measurable lead time before the current-window
 label becomes `slight` or `severe`.
+
+`chatter-twin icnc-manifest`, `download-icnc`, and `ingest-icnc` support the
+first public real-data validation pass against the i-CNC Zenodo dataset. The
+raw download is about 3 GB and is kept under ignored `data/`; imported replay
+subsets are written under ignored `results/`. See `docs/REAL_DATASETS.md`.
 
 ## Offline Risk Training
 

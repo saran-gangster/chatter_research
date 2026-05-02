@@ -6,3 +6,7 @@ __pycache__/
 
 # Generated experiment outputs can be large; keep reproducible commands in docs.
 results/
+
+# Raw public/DAQ datasets are too large for git. Keep download commands and
+# manifests in docs or generated result directories instead.
+data/
