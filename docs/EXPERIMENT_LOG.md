@@ -3673,3 +3673,97 @@ Lesson: Purdue is now the better public benchmark for real current-window
 audio chatter recognition because it has many independent labeled cutting
 paths. It still cannot validate early-warning or control timing by itself,
 because labels are path-level and no intervention trajectory exists.
+
+## 2026-05-02 - Real-Data Benchmark Table And Purdue Error Analysis
+
+Added a small real-data reporting layer so public-data results can be compared
+without overclaiming across incompatible datasets:
+
+| Command | Purpose |
+|---|---|
+| `real-data-benchmark` | Collect completed i-CNC, KIT, and Purdue model metrics into one claim-bounded benchmark table. |
+| `risk-error-analysis` | Read a model's `predictions.csv` and write label, confusion, and per-experiment failure diagnostics. |
+
+Implementation:
+
+| Item | Path |
+|---|---|
+| Real-data reporting module | `src/chatter_twin/realdata.py` |
+| CLI commands | `src/chatter_twin/cli.py` |
+| Regression tests | `tests/test_realdata.py` |
+
+Default benchmark command:
+
+```bash
+uv run chatter-twin real-data-benchmark \
+  --out results/real_data_benchmark_current
+```
+
+Current table generated on the data machine:
+
+| Dataset/check | Split | Target | Accuracy | Chatter F1 | Lead F1 | Event F1 | Claim boundary |
+|---|---|---|---:|---:|---:|---:|---|
+| i-CNC vibration packages | episode | current | 0.906 | 0.544 | 0.000 | 0.000 | current-window signal sanity only |
+| KIT force+accel row split | row | horizon | 0.986 | 0.959 | 0.952 | 1.000 | pipeline sanity only |
+| KIT force+accel time block | time_block | horizon | 0.933 | 0.043 | 0.026 | 0.000 | honest time-forward stress test; no early-warning claim |
+| Purdue sensor 0 audio | scenario | current | 0.651 | 0.731 | 0.000 | 0.000 | best current-window Purdue unseen-experiment audio baseline |
+| Purdue sensor 1 audio | scenario | current | 0.566 | 0.637 | 0.000 | 0.000 | unseen-experiment current-window validation |
+| Purdue sensor 2 audio | scenario | current | 0.375 | 0.456 | 0.000 | 0.000 | single-sensor diagnostic |
+| Purdue 0+1+2 norm audio | scenario | current | 0.680 | 0.550 | 0.000 | 0.000 | sensor-fusion diagnostic |
+
+The Purdue sensor-specific check showed that naive 3-sensor norm fusion is not
+the best current-window chatter detector. Sensor 0 is the current champion on
+unseen experiment folders:
+
+| Input | Held-out experiments | Accuracy | Chatter F1 |
+|---|---|---:|---:|
+| sensor 0 | `Exp0-3`, `Exp1-2`, `Exp1-4`, `Exp1-5`, `Exp2-1` | 0.651 | 0.731 |
+| sensor 1 | `Exp0-2`, `Exp1-1-2`, `Exp1-3`, `Exp1-8`, `Exp2-1` | 0.566 | 0.637 |
+| sensor 2 | `Exp0-3`, `Exp1-1-2`, `Exp1-4`, `Exp1-5`, `Exp3-2` | 0.375 | 0.456 |
+| sensors 0,1,2 norm | scenario holdout | 0.680 | 0.550 |
+
+Purdue champion error-analysis command:
+
+```bash
+uv run chatter-twin risk-error-analysis \
+  --model-dir results/mt_cutting_sensor0_current_scenario_baseline_12k \
+  --out results/mt_cutting_sensor0_scenario_error_analysis_12k \
+  --group-column scenario
+```
+
+Label diagnostics:
+
+| Label | Support | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|
+| stable | 1,704 | 0.780 | 0.809 | 0.794 |
+| slight | 628 | 0.339 | 0.304 | 0.320 |
+| severe | 745 | 0.581 | 0.580 | 0.580 |
+| chatter binary | 1,373 | 0.752 | 0.716 | 0.733 |
+
+Worst held-out experiment groups:
+
+| Experiment | Windows | Chatter support | Chatter F1 | False negatives | False positives |
+|---|---:|---:|---:|---:|---:|
+| Exp0-3 | 739 | 80 | 0.103 | 71 | 86 |
+| Exp1-2 | 647 | 502 | 0.697 | 189 | 83 |
+| Exp1-4 | 622 | 261 | 0.735 | 95 | 25 |
+| Exp2-1 | 424 | 213 | 0.837 | 0 | 83 |
+| Exp1-5 | 645 | 317 | 0.872 | 35 | 48 |
+
+Most common non-diagonal confusion pairs:
+
+| Pair | Count |
+|---|---:|
+| slight -> stable | 346 |
+| severe -> slight | 269 |
+| stable -> severe | 221 |
+| stable -> slight | 104 |
+| slight -> severe | 91 |
+| severe -> stable | 44 |
+
+Lesson: all four requested non-GPU checks now have a reproducible artifact:
+the cross-dataset benchmark table, Purdue held-out error analysis, a
+sensor-specific Purdue baseline that beats naive sensor fusion on chatter F1,
+and a clear KIT time-block conclusion. KIT remains a pipeline and
+early-warning stress test, while Purdue is the better public current-window
+audio validation bridge until real synchronized intervention data is collected.

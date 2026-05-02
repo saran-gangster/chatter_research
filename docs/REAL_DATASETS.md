@@ -446,13 +446,91 @@ uv run chatter-twin train-risk \
 | Test chatter F1 | 0.637 |
 | Test intervention F1 | 0.637 |
 
-An all-three-sensor import was also tested with the same 12k cap and scenario
-holdout:
+Sensor-specific imports were then tested with the same 12k cap and scenario
+holdout to avoid hiding sensor placement effects behind a simple normed fusion:
 
-| Input | Test accuracy | Test chatter F1 |
-|---|---:|---:|
-| sensor 1 only | 0.566 | 0.637 |
-| sensors 0,1,2 norm | 0.680 | 0.550 |
+```bash
+uv run chatter-twin ingest-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out results/mt_cutting_sensor0_replay_12k \
+  --sensors 0 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --max-windows 12000
+
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_sensor0_replay_12k \
+  --out results/mt_cutting_sensor0_current_scenario_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode scenario \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 515
+```
+
+An all-three-sensor import was also tested with the same replay cap and
+scenario holdout:
+
+| Input | Split | Test accuracy | Test chatter F1 | Interpretation |
+|---|---|---:|---:|---|
+| sensor 0 only | scenario | 0.651 | 0.731 | current Purdue champion |
+| sensor 1 only | scenario | 0.566 | 0.637 | useful but weaker than sensor 0 |
+| sensor 2 only | scenario | 0.375 | 0.456 | weak single-sensor diagnostic |
+| sensors 0,1,2 norm | scenario | 0.680 | 0.550 | accuracy improves, chatter F1 worsens |
+
+The sensor-0 scenario holdout retained these unseen experiments:
+`Exp0-3`, `Exp1-2`, `Exp1-4`, `Exp1-5`, and `Exp2-1`.
+
+Run the cross-dataset benchmark table after the public-data model directories
+exist:
+
+```bash
+uv run chatter-twin real-data-benchmark \
+  --out results/real_data_benchmark_current
+```
+
+Current benchmark summary:
+
+| Dataset/check | Split | Target | Accuracy | Chatter F1 | Lead F1 | Claim boundary |
+|---|---|---|---:|---:|---:|---|
+| i-CNC vibration packages | episode | current | 0.906 | 0.544 | 0.000 | current-window sanity only |
+| KIT force+accel row split | row | horizon | 0.986 | 0.959 | 0.952 | pipeline sanity only |
+| KIT force+accel time block | time_block | horizon | 0.933 | 0.043 | 0.026 | stress test, no early-warning claim |
+| Purdue sensor 0 audio | scenario | current | 0.651 | 0.731 | 0.000 | best current-window public audio baseline so far |
+| Purdue sensor 1 audio | scenario | current | 0.566 | 0.637 | 0.000 | unseen-experiment validation |
+| Purdue sensor 2 audio | scenario | current | 0.375 | 0.456 | 0.000 | diagnostic only |
+| Purdue 0+1+2 norm audio | scenario | current | 0.680 | 0.550 | 0.000 | diagnostic only |
+
+Run the Purdue error analysis on the current champion:
+
+```bash
+uv run chatter-twin risk-error-analysis \
+  --model-dir results/mt_cutting_sensor0_current_scenario_baseline_12k \
+  --out results/mt_cutting_sensor0_scenario_error_analysis_12k \
+  --group-column scenario
+```
+
+Sensor-0 error-analysis highlights:
+
+| Label | Support | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|
+| stable | 1,704 | 0.780 | 0.809 | 0.794 |
+| slight | 628 | 0.339 | 0.304 | 0.320 |
+| severe | 745 | 0.581 | 0.580 | 0.580 |
+| chatter binary | 1,373 | 0.752 | 0.716 | 0.733 |
+
+Worst held-out experiment groups:
+
+| Experiment | Windows | Chatter support | Chatter F1 | False negatives | False positives |
+|---|---:|---:|---:|---:|---:|
+| Exp0-3 | 739 | 80 | 0.103 | 71 | 86 |
+| Exp1-2 | 647 | 502 | 0.697 | 189 | 83 |
+| Exp1-4 | 622 | 261 | 0.735 | 95 | 25 |
+| Exp2-1 | 424 | 213 | 0.837 | 0 | 83 |
+| Exp1-5 | 645 | 317 | 0.872 | 35 | 48 |
 
 Interpretation: Purdue gives a much better multi-cut public chatter benchmark
 than KIT for current-window signal validation. It still does not solve

@@ -42,6 +42,12 @@ DEFAULT_REAL_DATA_RUNS: tuple[RealDataRunSpec, ...] = (
     ),
     RealDataRunSpec(
         dataset="Purdue MT cutting",
+        modality="48 kHz sound sensor 0",
+        result_dir=Path("results/mt_cutting_sensor0_current_scenario_baseline_12k"),
+        claim_allowed="best current-window Purdue unseen-experiment audio baseline",
+    ),
+    RealDataRunSpec(
+        dataset="Purdue MT cutting",
         modality="48 kHz sound sensor 1",
         result_dir=Path("results/mt_cutting_sensor1_current_episode_baseline_12k"),
         claim_allowed="current-window audio chatter validation across held-out cutting paths",
@@ -51,6 +57,12 @@ DEFAULT_REAL_DATA_RUNS: tuple[RealDataRunSpec, ...] = (
         modality="48 kHz sound sensor 1",
         result_dir=Path("results/mt_cutting_sensor1_current_scenario_baseline_12k"),
         claim_allowed="stricter current-window audio validation across unseen experiment folders",
+    ),
+    RealDataRunSpec(
+        dataset="Purdue MT cutting",
+        modality="48 kHz sound sensor 2",
+        result_dir=Path("results/mt_cutting_sensor2_current_scenario_baseline_12k"),
+        claim_allowed="single-sensor diagnostic; not current champion on experiment holdout",
     ),
     RealDataRunSpec(
         dataset="Purdue MT cutting",
