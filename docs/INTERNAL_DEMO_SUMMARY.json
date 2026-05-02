@@ -40,7 +40,7 @@
     "rl_shadow_replay_dir": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
     "shadow_eval_dir": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
     "shadow_review_gate_dir": "results/rl_td3_fixed_mrr2_shadow_gate_demo",
-    "test_status": "109 passed in 17.25s"
+    "test_status": "112 passed in 55.66s"
   },
   "controller_baselines": {
     "best_by_risk": {
@@ -105,7 +105,7 @@
     "path": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
     "status": "validated_synthetic_benchmark"
   },
-  "generated_at": "2026-05-02T17:18:55+00:00",
+  "generated_at": "2026-05-02T17:39:12+00:00",
   "promotion_gates": [
     {
       "failed_checks": [],
@@ -226,7 +226,7 @@
     "status": "shadow_policy_evaluated",
     "warning_fraction": 0.4
   },
-  "test_status": "109 passed in 17.25s",
+  "test_status": "112 passed in 55.66s",
   "validation_boundary": {
     "not_validated_yet": [
       "No MTConnect or controller API connection is implemented.",

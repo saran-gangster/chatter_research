@@ -5,19 +5,24 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
 from chatter_twin.cli import main
 from chatter_twin.datasets import (
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
     KITMatIngestConfig,
+    MTCuttingIngestConfig,
     discover_icnc_csv_sources,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
+    ingest_mt_cutting_dataset,
     ingest_icnc_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
+    inspect_mt_cutting_dataset,
     write_icnc_source_manifest,
+    write_mt_cutting_source_manifest,
 )
 
 
@@ -29,6 +34,15 @@ def test_write_icnc_source_manifest(tmp_path: Path):
     assert saved["record_url"] == manifest["record_url"]
     assert saved["filename"] == "i-CNC Dataset.zip"
     assert saved["md5"]
+
+
+def test_write_mt_cutting_source_manifest(tmp_path: Path):
+    out = tmp_path / "source_manifest.json"
+    manifest = write_mt_cutting_source_manifest(out)
+    assert out.exists()
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["repository_url"] == manifest["repository_url"]
+    assert "sound" in saved["modalities"]["IMI"]
 
 
 def test_ingest_icnc_dataset_from_vector_csv(tmp_path: Path):
@@ -64,6 +78,61 @@ def test_ingest_icnc_dataset_from_vector_csv(tmp_path: Path):
     assert rows[-1]["label"] == "slight"
     assert "rms_growth_rate" in rows[0]
     assert "future_chatter_within_horizon" in rows[0]
+
+
+def test_inspect_and_ingest_mt_cutting_dataset(tmp_path: Path):
+    source = tmp_path / "mt"
+    _write_minimal_mt_cutting_source(source)
+
+    inspection = inspect_mt_cutting_dataset(source)
+    assert inspection["experiments"] == 1
+    assert inspection["label_counts"] == {"severe": 1, "stable": 1}
+
+    payload = ingest_mt_cutting_dataset(
+        source=source,
+        out_dir=tmp_path / "mt_out",
+        config=MTCuttingIngestConfig(window_s=0.1, stride_s=0.1, horizon_s=0.2, max_windows=6),
+    )
+
+    manifest = payload["manifest"]
+    assert manifest["total_windows"] == 6
+    assert set(manifest["label_counts"]) == {"stable", "severe"}
+    data = np.load(tmp_path / "mt_out" / "dataset.npz")
+    assert data["sensor_windows"].shape == (6, 100, 3)
+    assert set(data["channel_names"].tolist()) == {"sensor0", "sensor1", "sensor2"}
+    with (tmp_path / "mt_out" / "windows.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["scenario"] == "ExpA"
+    assert rows[0]["label"] == "stable"
+    assert rows[-1]["label"] == "severe"
+
+
+def test_cli_mt_cutting_manifest_inspect_and_ingest(tmp_path: Path):
+    source = tmp_path / "mt"
+    _write_minimal_mt_cutting_source(source)
+    manifest_out = tmp_path / "manifest.json"
+    inspect_out = tmp_path / "inspect.json"
+    ingest_out = tmp_path / "ingested"
+
+    assert main(["mt-cutting-manifest", "--out", str(manifest_out)]) == 0
+    assert main(["inspect-mt-cutting", "--source", str(source), "--out", str(inspect_out)]) == 0
+    assert main(
+        [
+            "ingest-mt-cutting",
+            "--source",
+            str(source),
+            "--out",
+            str(ingest_out),
+            "--window",
+            "0.1",
+            "--stride",
+            "0.1",
+            "--max-windows",
+            "3",
+        ]
+    ) == 0
+    saved_manifest = json.loads((ingest_out / "manifest.json").read_text(encoding="utf-8"))
+    assert saved_manifest["total_windows"] == 3
 
 
 def test_ingest_icnc_dataset_from_zip_with_expanded_columns(tmp_path: Path):
@@ -323,6 +392,127 @@ def _write_minimal_kit_source(root: Path) -> None:
             for idx in range(8):
                 scale = 2.0 if trial.endswith("A01") else 1.0
                 writer.writerow({"CYCLE": idx, "LOAD|6": scale * (idx + 1), "CURRENT|6": scale * (idx % 3 + 1)})
+
+
+def _write_minimal_mt_cutting_source(root: Path) -> None:
+    exp = root / "IMI" / "ExpA"
+    exp.mkdir(parents=True, exist_ok=True)
+    with (exp / "cutting.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["start", "end"])
+        writer.writeheader()
+        writer.writerows([{"start": "0.0", "end": "0.4"}, {"start": "0.4", "end": "0.8"}])
+
+    sample_rate = 1_000
+    t = np.arange(sample_rate, dtype=np.float64) / sample_rate
+    for sensor in range(3):
+        signal = 0.4 * np.sin(2 * np.pi * (30 + 10 * sensor) * t)
+        wavfile.write(exp / f"fixture_sensor{sensor}.wav", sample_rate, (signal * 32767).astype(np.int16))
+
+    _write_minimal_multisheet_xlsx(
+        root / "IMI" / "labeling_all_details.xlsx",
+        {
+            "Summary": [["Experiment", "Machine", "Tool setup"], ["ExpA", "Hurco", "Short"]],
+            "ExpA": [
+                [
+                    "No.",
+                    "Machine",
+                    "Tool",
+                    "Tool setup",
+                    "Tool Cond.",
+                    "Workpiece",
+                    "Spindle speed [RPM]",
+                    "Feedrate [IPM]",
+                    "Cutting direction",
+                    "Depth of cut [inch]",
+                    "Width of cut [inch]",
+                    "Chatter (operator 1)",
+                    "Chatter (operator 2)",
+                ],
+                ["1", "Hurco", "1/4 2-flute square endmill", "Short", "New", "AL6061", "6000", "20", "Up", "0.05", "0.05", "0", "0"],
+                ["2", "Hurco", "1/4 2-flute square endmill", "Short", "New", "AL6061", "6000", "20", "Down", "0.05", "0.05", "2", "2"],
+            ],
+        },
+    )
+
+
+def _write_minimal_multisheet_xlsx(path: Path, sheets: dict[str, list[list[str]]]) -> None:
+    strings: list[str] = []
+    index: dict[str, int] = {}
+    for rows in sheets.values():
+        for row in rows:
+            for value in row:
+                if value not in index:
+                    index[value] = len(strings)
+                    strings.append(value)
+
+    def cell_ref(row_idx: int, col_idx: int) -> str:
+        letters = ""
+        col = col_idx
+        while col:
+            col, rem = divmod(col - 1, 26)
+            letters = chr(65 + rem) + letters
+        return f"{letters}{row_idx}"
+
+    with zipfile.ZipFile(path, "w") as archive:
+        overrides = "\n".join(
+            f'<Override PartName="/xl/worksheets/sheet{idx}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            for idx in range(1, len(sheets) + 1)
+        )
+        archive.writestr(
+            "[Content_Types].xml",
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+{overrides}
+<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>""",
+        )
+        sheet_entries = []
+        rel_entries = []
+        for idx, name in enumerate(sheets, start=1):
+            sheet_entries.append(f'<sheet name="{name}" sheetId="{idx}" r:id="rId{idx}"/>')
+            rel_entries.append(
+                f'<Relationship Id="rId{idx}" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                f'Target="worksheets/sheet{idx}.xml"/>'
+            )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets>"""
+            + "".join(sheet_entries)
+            + "</sheets></workbook>",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"""
+            + "".join(rel_entries)
+            + "</Relationships>",
+        )
+        archive.writestr(
+            "xl/sharedStrings.xml",
+            '<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            + "".join(f"<si><t>{value}</t></si>" for value in strings)
+            + "</sst>",
+        )
+        for sheet_idx, rows in enumerate(sheets.values(), start=1):
+            sheet_rows = []
+            for row_idx, row in enumerate(rows, start=1):
+                cells = []
+                for col_idx, value in enumerate(row, start=1):
+                    cells.append(f'<c r="{cell_ref(row_idx, col_idx)}" t="s"><v>{index[value]}</v></c>')
+                sheet_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+            archive.writestr(
+                f"xl/worksheets/sheet{sheet_idx}.xml",
+                '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                + "".join(sheet_rows)
+                + "</sheetData></worksheet>",
+            )
 
 
 def _write_minimal_xlsx(path: Path, rows: list[list[str]]) -> None:

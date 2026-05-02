@@ -24,14 +24,18 @@ from chatter_twin.datasets import (
     KITIndustrialIngestConfig,
     KITMatIngestConfig,
     KIT_INDUSTRIAL_FILENAME,
+    MTCuttingIngestConfig,
     download_icnc_dataset,
+    ingest_mt_cutting_dataset,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
+    inspect_mt_cutting_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     ingest_icnc_dataset,
     write_icnc_source_manifest,
     write_kit_industrial_source_manifest,
+    write_mt_cutting_source_manifest,
 )
 from chatter_twin.controllers import make_controller
 from chatter_twin.demo import InternalDemoConfig, write_internal_demo_report
@@ -375,9 +379,16 @@ def main(argv: list[str] | None = None) -> int:
     kit_manifest = subparsers.add_parser("kit-industrial-manifest")
     kit_manifest.add_argument("--out", type=Path, default=Path("data/raw/kit_industrial/source_manifest.json"))
 
+    mt_manifest = subparsers.add_parser("mt-cutting-manifest")
+    mt_manifest.add_argument("--out", type=Path, default=Path("data/raw/mt_cutting_dataset/source_manifest.json"))
+
     inspect_kit = subparsers.add_parser("inspect-kit-industrial")
     inspect_kit.add_argument("--source", type=Path, required=True)
     inspect_kit.add_argument("--out", type=Path, default=None)
+
+    inspect_mt = subparsers.add_parser("inspect-mt-cutting")
+    inspect_mt.add_argument("--source", type=Path, required=True)
+    inspect_mt.add_argument("--out", type=Path, default=None)
 
     inspect_kit_mat = subparsers.add_parser("inspect-kit-mat")
     inspect_kit_mat.add_argument("--source", type=Path, required=True)
@@ -429,6 +440,18 @@ def main(argv: list[str] | None = None) -> int:
     ingest_kit_mat.add_argument("--include-other-anomalies", action="store_true")
     ingest_kit_mat.add_argument("--max-windows", type=int, default=None)
     ingest_kit_mat.add_argument("--max-samples-per-trial", type=int, default=None)
+
+    ingest_mt = subparsers.add_parser("ingest-mt-cutting")
+    ingest_mt.add_argument("--source", type=Path, required=True)
+    ingest_mt.add_argument("--out", type=Path, required=True)
+    ingest_mt.add_argument("--experiments", default="")
+    ingest_mt.add_argument("--window", type=float, default=0.10)
+    ingest_mt.add_argument("--stride", type=float, default=0.05)
+    ingest_mt.add_argument("--horizon", type=float, default=0.25)
+    ingest_mt.add_argument("--sensors", default="0,1,2")
+    ingest_mt.add_argument("--include-unknown", action="store_true")
+    ingest_mt.add_argument("--max-experiments", type=int, default=None)
+    ingest_mt.add_argument("--max-windows", type=int, default=None)
 
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
@@ -548,8 +571,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_icnc_manifest(args)
         case "kit-industrial-manifest":
             return _cmd_kit_industrial_manifest(args)
+        case "mt-cutting-manifest":
+            return _cmd_mt_cutting_manifest(args)
         case "inspect-kit-industrial":
             return _cmd_inspect_kit_industrial(args)
+        case "inspect-mt-cutting":
+            return _cmd_inspect_mt_cutting(args)
         case "inspect-kit-mat":
             return _cmd_inspect_kit_mat(args)
         case "download-icnc":
@@ -560,6 +587,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_ingest_kit_industrial(args)
         case "ingest-kit-mat":
             return _cmd_ingest_kit_mat(args)
+        case "ingest-mt-cutting":
+            return _cmd_ingest_mt_cutting(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1262,8 +1291,34 @@ def _cmd_kit_industrial_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mt_cutting_manifest(args: argparse.Namespace) -> int:
+    manifest = write_mt_cutting_source_manifest(args.out)
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "repository_url": manifest["repository_url"],
+                "dataset": manifest["dataset"],
+                "bridge_value": manifest["bridge_value"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _cmd_inspect_kit_industrial(args: argparse.Namespace) -> int:
     payload = inspect_kit_industrial_dataset(args.source)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_inspect_mt_cutting(args: argparse.Namespace) -> int:
+    payload = inspect_mt_cutting_dataset(args.source)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1343,6 +1398,39 @@ def _cmd_ingest_kit_mat(args: argparse.Namespace) -> int:
             include_other_anomalies=args.include_other_anomalies,
             max_windows=args.max_windows,
             max_samples_per_trial=args.max_samples_per_trial,
+        ),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "sources": payload["sources"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_ingest_mt_cutting(args: argparse.Namespace) -> int:
+    payload = ingest_mt_cutting_dataset(
+        source=args.source,
+        out_dir=args.out,
+        experiments=[experiment.strip() for experiment in args.experiments.split(",") if experiment.strip()],
+        config=MTCuttingIngestConfig(
+            window_s=args.window,
+            stride_s=args.stride,
+            horizon_s=args.horizon,
+            sensors=tuple(_parse_int_csv_arg(args.sensors)),
+            include_unknown=args.include_unknown,
+            max_experiments=args.max_experiments,
+            max_windows=args.max_windows,
         ),
     )
     manifest = payload["manifest"]

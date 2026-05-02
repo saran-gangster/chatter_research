@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.io import wavfile
 
 from chatter_twin.features import extract_signal_features
 from chatter_twin.replay import (
@@ -45,6 +46,9 @@ KIT_INDUSTRIAL_DOWNLOAD_URL = "https://radar.kit.edu/radar-backend/archives/hvvw
 KIT_INDUSTRIAL_FILENAME = "10.35097-hvvwn1kfwf7qt48z.tar"
 KIT_INDUSTRIAL_SIZE_BYTES = 44_584_092_672
 KIT_INDUSTRIAL_DOI = "10.35097/hvvwn1kfwf7qt48z"
+
+MT_CUTTING_GITHUB_URL = "https://github.com/purduelamm/mt_cutting_dataset"
+MT_CUTTING_DATASET_NAME = "CNC Machine Tool Cutting Sound Dataset"
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,31 @@ class KITMatIngestConfig:
             raise ValueError("max_samples_per_trial must be at least 4")
 
 
+@dataclass(frozen=True)
+class MTCuttingIngestConfig:
+    window_s: float = 0.10
+    stride_s: float = 0.05
+    horizon_s: float = 0.25
+    sensors: tuple[int, ...] = (0, 1, 2)
+    include_unknown: bool = False
+    max_experiments: int | None = None
+    max_windows: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0:
+            raise ValueError("window_s must be positive")
+        if self.stride_s <= 0:
+            raise ValueError("stride_s must be positive")
+        if self.horizon_s <= 0:
+            raise ValueError("horizon_s must be positive")
+        if not self.sensors:
+            raise ValueError("sensors cannot be empty")
+        if self.max_experiments is not None and self.max_experiments < 1:
+            raise ValueError("max_experiments must be at least 1")
+        if self.max_windows is not None and self.max_windows < 1:
+            raise ValueError("max_windows must be at least 1")
+
+
 def icnc_source_manifest() -> dict[str, object]:
     return {
         "dataset": "i-CNC Use Case: Vibration data and associated Chatter indication during milling process with CNC machines",
@@ -194,6 +223,29 @@ def kit_industrial_source_manifest() -> dict[str, object]:
 
 def write_kit_industrial_source_manifest(path: Path) -> dict[str, object]:
     manifest = kit_industrial_source_manifest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def mt_cutting_source_manifest() -> dict[str, object]:
+    return {
+        "dataset": MT_CUTTING_DATASET_NAME,
+        "repository_url": MT_CUTTING_GITHUB_URL,
+        "license": "unspecified in importer; verify before publication",
+        "modalities": {
+            "IMI": "laboratory CNC milling sound, three synchronized 48 kHz sensors, cutting intervals, operator chatter labels",
+            "KRPM": "industry CNC machining sound and cutting intervals, no detailed chatter labels in the IMI workbook",
+        },
+        "bridge_value": (
+            "many independent labeled sound cuts for real-signal current-window chatter validation; "
+            "not closed-loop intervention data and not a calibrated force/FRF process twin"
+        ),
+    }
+
+
+def write_mt_cutting_source_manifest(path: Path) -> dict[str, object]:
+    manifest = mt_cutting_source_manifest()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
@@ -478,6 +530,355 @@ def ingest_kit_mat_dataset(
         "out_dir": str(out_dir),
         "artifacts": list(manifest.artifacts),
     }
+
+
+def inspect_mt_cutting_dataset(source: Path) -> dict[str, object]:
+    """Inspect the Purdue CNC cutting sound dataset layout and IMI labels."""
+
+    labels = _read_mt_label_workbook(source / "IMI" / "labeling_all_details.xlsx")
+    experiment_dirs = _mt_experiment_dirs(source)
+    experiments: list[dict[str, object]] = []
+    label_counts: Counter[str] = Counter()
+    for exp_dir in experiment_dirs:
+        exp_name = exp_dir.name
+        cutting_intervals = _read_cutting_intervals(exp_dir / "cutting.csv")
+        exp_labels = labels.get(exp_name, [])
+        chatter_values = [_mt_row_chatter_value(row) for row in exp_labels]
+        for value in chatter_values:
+            label_counts[_mt_chatter_value_to_label(value)] += 1
+        wavs = sorted(path.name for path in exp_dir.glob("*_sensor*.wav"))
+        experiments.append(
+            {
+                "experiment": exp_name,
+                "cutting_intervals": len(cutting_intervals),
+                "label_rows": len(exp_labels),
+                "wav_files": wavs,
+                "label_counts": dict(sorted(Counter(_mt_chatter_value_to_label(value) for value in chatter_values).items())),
+            }
+        )
+    return {
+        "source": str(source),
+        "repository_url": MT_CUTTING_GITHUB_URL,
+        "experiments": len(experiment_dirs),
+        "labeled_experiments": len(labels),
+        "label_counts": dict(sorted(label_counts.items())),
+        "experiment_summaries": experiments,
+    }
+
+
+def ingest_mt_cutting_dataset(
+    *,
+    source: Path,
+    out_dir: Path,
+    experiments: list[str] | None = None,
+    config: MTCuttingIngestConfig | None = None,
+) -> dict[str, object]:
+    """Import Purdue IMI cutting-sound windows into the replay schema."""
+
+    config = config or MTCuttingIngestConfig()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = {experiment.strip() for experiment in experiments or [] if experiment.strip()}
+    labels_by_exp = _read_mt_label_workbook(source / "IMI" / "labeling_all_details.xlsx")
+    candidates = _mt_experiment_dirs(source)
+    if selected:
+        available = {path.name for path in candidates}
+        missing = sorted(selected - available)
+        if missing:
+            raise ValueError(f"MT cutting experiments not found: {', '.join(missing)}")
+        candidates = [path for path in candidates if path.name in selected]
+    if config.max_experiments is not None:
+        candidates = candidates[: config.max_experiments]
+
+    windows: list[NDArray[np.float64]] = []
+    records: list[WindowRecord] = []
+    summaries: list[dict[str, object]] = []
+    episode_id = 0
+
+    for exp_dir in candidates:
+        if config.max_windows is not None and len(records) >= config.max_windows:
+            break
+        exp_name = exp_dir.name
+        label_rows = labels_by_exp.get(exp_name)
+        if not label_rows:
+            continue
+        intervals = _read_cutting_intervals(exp_dir / "cutting.csv")
+        if not intervals:
+            continue
+        sample_rate_hz, signal = _read_mt_audio_matrix(exp_dir, config.sensors)
+        path_summaries: list[dict[str, object]] = []
+        for path_idx, interval in enumerate(intervals):
+            if config.max_windows is not None and len(records) >= config.max_windows:
+                break
+            label_row = label_rows[path_idx] if path_idx < len(label_rows) else {}
+            chatter_value = _mt_row_chatter_value(label_row)
+            label = _mt_chatter_value_to_label(chatter_value)
+            if label == "unknown" and not config.include_unknown:
+                continue
+            start_sample = max(0, int(round(interval["start_s"] * sample_rate_hz)))
+            stop_sample = min(signal.shape[0], int(round(interval["end_s"] * sample_rate_hz)))
+            if stop_sample <= start_sample:
+                continue
+            interval_signal = signal[start_sample:stop_sample]
+            remaining = None if config.max_windows is None else config.max_windows - len(records)
+            path_windows, path_records, _ = _slice_icnc_package(
+                sensor_signal=interval_signal,
+                scenario=exp_name,
+                episode=episode_id,
+                package_index=path_idx,
+                starting_window_id=len(records),
+                starting_window_index=0,
+                sample_rate_hz=sample_rate_hz,
+                spindle_rpm=max(_mt_float(label_row, "Spindle speed [RPM]", 1.0), 1.0),
+                label=label,
+                previous=_TemporalState(),
+                config=_mt_slice_config(label_row, sample_rate_hz, config),
+                max_windows=remaining,
+                feed_per_tooth_m=_mt_feed_per_tooth_m(label_row),
+                axial_depth_m=_mt_depth_m(label_row, ("Depth of cut [inch]", "Depth of Cut [inch]", "Depth [inch]")),
+                radial_depth_m=_mt_depth_m(label_row, ("Width of cut [inch]", "Radial depth of cut [inch]", "Width [inch]")),
+            )
+            path_records = attach_horizon_targets(path_records, HorizonConfig(horizon_s=config.horizon_s))
+            windows.extend(path_windows)
+            records.extend(path_records)
+            path_summaries.append(
+                {
+                    "path_index": path_idx + 1,
+                    "start_s": interval["start_s"],
+                    "end_s": interval["end_s"],
+                    "label": label,
+                    "chatter_value": chatter_value,
+                    "windows": len(path_records),
+                }
+            )
+            episode_id += 1
+        summaries.append(
+            {
+                "experiment": exp_name,
+                "sample_rate_hz": sample_rate_hz,
+                "sensors": list(config.sensors),
+                "cutting_intervals": len(intervals),
+                "label_rows": len(label_rows),
+                "paths_imported": len(path_summaries),
+                "windows": sum(int(item["windows"]) for item in path_summaries),
+                "label_counts": dict(sorted(Counter(item["label"] for item in path_summaries).items())),
+                "paths": path_summaries,
+            }
+        )
+
+    if not records:
+        raise ValueError("No MT cutting replay windows produced; check experiment selection and window size")
+
+    sensor_windows = np.stack(windows).astype(np.float32)
+    manifest = _mt_cutting_manifest(records, summaries, config, sensor_windows)
+    _write_real_replay_dataset(out_dir, records, sensor_windows, manifest)
+    _write_mt_cutting_readme(out_dir / "README.md", manifest, summaries, config)
+    return {
+        "manifest": asdict(manifest),
+        "sources": summaries,
+        "out_dir": str(out_dir),
+        "artifacts": list(manifest.artifacts),
+    }
+
+
+def _mt_experiment_dirs(source: Path) -> list[Path]:
+    imi_dir = source / "IMI"
+    if not imi_dir.exists():
+        raise ValueError(f"{source} does not contain an IMI directory")
+    return sorted(path for path in imi_dir.iterdir() if path.is_dir() and (path / "cutting.csv").exists())
+
+
+def _read_mt_label_workbook(path: Path) -> dict[str, list[dict[str, str]]]:
+    if not path.exists():
+        raise ValueError(f"MT cutting label workbook not found: {path}")
+    sheets = _read_simple_xlsx(path)
+    parsed: dict[str, list[dict[str, str]]] = {}
+    for sheet_name, rows in sheets.items():
+        if sheet_name == "Summary" or not rows:
+            continue
+        headers = [str(value).strip() for value in rows[0]]
+        sheet_rows: list[dict[str, str]] = []
+        for row in rows[1:]:
+            if not any(str(value).strip() for value in row):
+                continue
+            record = {header: str(row[idx]).strip() if idx < len(row) else "" for idx, header in enumerate(headers) if header}
+            if record.get("No."):
+                sheet_rows.append(record)
+        parsed[sheet_name] = sheet_rows
+    return parsed
+
+
+def _read_simple_xlsx(path: Path) -> dict[str, list[list[str]]]:
+    spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns = {"a": spreadsheet_ns}
+    with zipfile.ZipFile(path) as archive:
+        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+        rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        relmap = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        shared = _xlsx_shared_strings(archive, ns)
+        sheets: dict[str, list[list[str]]] = {}
+        for sheet in workbook.findall("a:sheets/a:sheet", ns):
+            name = str(sheet.attrib["name"])
+            rel_id = sheet.attrib[f"{{{rel_ns}}}id"]
+            target = relmap[rel_id]
+            sheet_path = "xl/" + target if not target.startswith("/") else target[1:]
+            root = ET.fromstring(archive.read(sheet_path))
+            rows: list[list[str]] = []
+            for xml_row in root.findall("a:sheetData/a:row", ns):
+                values: dict[int, str] = {}
+                for cell in xml_row.findall("a:c", ns):
+                    ref = cell.attrib.get("r", "A0")
+                    match = re.match(r"([A-Z]+)([0-9]+)", ref)
+                    if not match:
+                        continue
+                    col_idx = _excel_col_to_index(match.group(1))
+                    values[col_idx] = _xlsx_cell_value(cell, shared, ns)
+                if values:
+                    rows.append([values.get(idx, "") for idx in range(max(values) + 1)])
+            sheets[name] = rows
+    return sheets
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile, ns: dict[str, str]) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    shared: list[str] = []
+    text_tag = f"{{{ns['a']}}}t"
+    for item in root.findall("a:si", ns):
+        shared.append("".join(text.text or "" for text in item.iter(text_tag)))
+    return shared
+
+
+def _xlsx_cell_value(cell: ET.Element, shared: list[str], ns: dict[str, str]) -> str:
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        text = cell.find("a:is/a:t", ns)
+        return "" if text is None else text.text or ""
+    value = cell.find("a:v", ns)
+    if value is None or value.text is None:
+        return ""
+    if cell_type == "s":
+        return shared[int(value.text)]
+    return value.text
+
+
+def _excel_col_to_index(column: str) -> int:
+    out = 0
+    for char in column:
+        out = out * 26 + ord(char) - ord("A") + 1
+    return out - 1
+
+
+def _read_cutting_intervals(path: Path) -> list[dict[str, float]]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        intervals: list[dict[str, float]] = []
+        for row in reader:
+            start = _first_float(row, ("start", "Start", "START"))
+            end = _first_float(row, ("end", "End", "END"))
+            if start is None or end is None or end <= start:
+                continue
+            intervals.append({"start_s": start, "end_s": end})
+    return intervals
+
+
+def _read_mt_audio_matrix(exp_dir: Path, sensors: tuple[int, ...]) -> tuple[float, NDArray[np.float64]]:
+    channels: list[NDArray[np.float64]] = []
+    sample_rates: list[int] = []
+    for sensor in sensors:
+        matches = sorted(exp_dir.glob(f"*_sensor{sensor}.wav"))
+        if not matches:
+            raise ValueError(f"{exp_dir} is missing sensor {sensor} WAV")
+        sample_rate, data = wavfile.read(matches[0])
+        sample_rates.append(int(sample_rate))
+        channels.append(_wav_to_float_mono(data))
+    if len(set(sample_rates)) != 1:
+        raise ValueError(f"{exp_dir} has mismatched sensor sample rates: {sample_rates}")
+    sample_count = min(channel.size for channel in channels)
+    if sample_count < 4:
+        raise ValueError(f"{exp_dir} audio is too short")
+    signal = np.column_stack([channel[:sample_count] for channel in channels])
+    return float(sample_rates[0]), signal
+
+
+def _wav_to_float_mono(data: NDArray[np.generic]) -> NDArray[np.float64]:
+    array = np.asarray(data)
+    if array.ndim == 2:
+        array = np.mean(array.astype(np.float64), axis=1)
+    else:
+        array = array.astype(np.float64)
+    if np.issubdtype(data.dtype, np.integer):
+        max_abs = float(max(abs(np.iinfo(data.dtype).min), abs(np.iinfo(data.dtype).max)))
+        array = array / max_abs
+    return array - float(np.mean(array))
+
+
+def _mt_row_chatter_value(row: dict[str, str]) -> float:
+    op1 = _mt_float(row, "Chatter (operator 1)", 0.0)
+    op2 = _mt_float(row, "Chatter (operator 2)", 0.0)
+    return max(op1, op2)
+
+
+def _mt_chatter_value_to_label(value: float) -> str:
+    if value <= 0:
+        return "stable"
+    if value < 2:
+        return "slight"
+    return "severe"
+
+
+def _mt_slice_config(row: dict[str, str], sample_rate_hz: float, config: MTCuttingIngestConfig) -> ICNCIngestConfig:
+    spindle_rpm = max(_mt_float(row, "Spindle speed [RPM]", 1.0), 1.0)
+    return ICNCIngestConfig(
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        horizon_s=config.horizon_s,
+        flute_count=_mt_flute_count(row.get("Tool", "")),
+        modal_frequency_hz=None,
+        default_sample_rate_hz=sample_rate_hz,
+        default_spindle_rpm=spindle_rpm,
+        default_feed_per_tooth_m=_mt_feed_per_tooth_m(row),
+    )
+
+
+def _mt_feed_per_tooth_m(row: dict[str, str]) -> float:
+    rpm = max(_mt_float(row, "Spindle speed [RPM]", 1.0), 1.0)
+    feed_ipm = _mt_float(row, "Feedrate [IPM]", 0.0)
+    flutes = _mt_flute_count(row.get("Tool", ""))
+    feed_m_per_min = feed_ipm * 0.0254
+    if feed_m_per_min <= 0:
+        return 1.0e-9
+    return max(feed_m_per_min / (rpm * flutes), 1.0e-9)
+
+
+def _mt_depth_m(row: dict[str, str], columns: tuple[str, ...]) -> float:
+    value = _first_float(row, columns)
+    return 0.0 if value is None else max(value * 0.0254, 0.0)
+
+
+def _mt_flute_count(tool: str) -> int:
+    match = re.search(r"(\d+)\s*[- ]?\s*flute", tool, flags=re.IGNORECASE)
+    if not match:
+        return 4
+    return max(int(match.group(1)), 1)
+
+
+def _first_float(row: dict[str, str], columns: tuple[str, ...]) -> float | None:
+    for column in columns:
+        if column in row:
+            try:
+                return float(str(row[column]).strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _mt_float(row: dict[str, str], column: str, default: float) -> float:
+    value = _first_float(row, (column,))
+    return default if value is None else value
 
 
 class _KITSource:
@@ -1425,6 +1826,42 @@ def _kit_mat_manifest(
     )
 
 
+def _mt_cutting_manifest(
+    records: list[WindowRecord],
+    source_summaries: list[dict[str, object]],
+    config: MTCuttingIngestConfig,
+    sensor_windows: NDArray[np.float32],
+) -> DatasetManifest:
+    counts = Counter(record.label for record in records)
+    return DatasetManifest(
+        schema_version="chatter-window-v5",
+        sample_rate_hz=result_sample_rate(records, sensor_windows),
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        channel_names=tuple(f"sensor{sensor}" for sensor in config.sensors),
+        scenarios=tuple(str(summary["experiment"]) for summary in source_summaries),
+        episodes_per_scenario=0,
+        total_windows=len(records),
+        label_counts=dict(sorted(counts.items())),
+        domain_randomization={
+            "enabled": False,
+            "source": "real_purdue_mt_cutting_sound",
+        },
+        sampling_strategy={
+            "dataset": "purdue_lamm_mt_cutting_dataset",
+            "repository_url": MT_CUTTING_GITHUB_URL,
+            "max_experiments": config.max_experiments,
+            "max_windows": config.max_windows,
+            "source_files": source_summaries,
+            "modality": "48 kHz sound windows from IMI cutting intervals",
+            "label_source": "labeling_all_details.xlsx operator chatter labels; max(operator1, operator2)",
+            "note": "Labels are per cutting path, not time-local onset labels.",
+        },
+        horizon={"horizon_s": config.horizon_s},
+        artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    )
+
+
 def _write_real_replay_dataset(
     out_dir: Path,
     records: list[WindowRecord],
@@ -1570,6 +2007,50 @@ def _write_kit_mat_readme(
             "",
             "- Labels are still coarse DoE trial labels, not time-local onset annotations.",
             "- Use this for high-rate signal validation and pseudo-labeling experiments before claiming early warning.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_mt_cutting_readme(
+    path: Path,
+    manifest: DatasetManifest,
+    source_summaries: list[dict[str, object]],
+    config: MTCuttingIngestConfig,
+) -> None:
+    lines = [
+        "# Purdue MT Cutting Sound Replay Dataset",
+        "",
+        f"Imported from `{MT_CUTTING_GITHUB_URL}` into the local chatter replay schema.",
+        "",
+        f"Total windows: `{manifest.total_windows}`",
+        f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
+        f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
+        f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
+        f"Sensors: `{','.join(str(sensor) for sensor in config.sensors)}`",
+        "",
+        "## Label Counts",
+        "",
+        "| Label | Count |",
+        "|---|---:|",
+    ]
+    for label, count in manifest.label_counts.items():
+        lines.append(f"| {label} | {count} |")
+    lines.extend(["", "## Source Experiments", "", "| Experiment | Paths imported | Windows | Label counts |", "|---|---:|---:|---|"])
+    for source in source_summaries:
+        lines.append(
+            f"| `{source['experiment']}` | {source['paths_imported']} | {source['windows']} | "
+            f"`{json.dumps(source['label_counts'], sort_keys=True)}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Caveats",
+            "",
+            "- Labels are assigned per cutting path from the operator workbook, not per time-local onset.",
+            "- This dataset is useful for real audio/current-window chatter validation, not closed-loop control validation.",
+            "- Cutting context is imported when available, but no FRF, force, surface-finish, or controller-intervention trace is included.",
             "",
         ]
     )
