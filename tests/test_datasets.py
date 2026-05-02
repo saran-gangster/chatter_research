@@ -9,15 +9,18 @@ from scipy.io import wavfile
 
 from chatter_twin.cli import main
 from chatter_twin.datasets import (
+    BoschCNCIngestConfig,
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
     KITMatIngestConfig,
     MTCuttingIngestConfig,
     discover_icnc_csv_sources,
+    ingest_bosch_cnc_dataset,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
     ingest_mt_cutting_dataset,
     ingest_icnc_dataset,
+    inspect_bosch_cnc_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     inspect_mt_cutting_dataset,
@@ -127,6 +130,57 @@ def test_cli_mt_cutting_manifest_inspect_and_ingest(tmp_path: Path):
             "0.1",
             "--stride",
             "0.1",
+            "--max-windows",
+            "3",
+        ]
+    ) == 0
+    saved_manifest = json.loads((ingest_out / "manifest.json").read_text(encoding="utf-8"))
+    assert saved_manifest["total_windows"] == 3
+
+
+def test_inspect_and_ingest_bosch_cnc_dataset(tmp_path: Path):
+    source = tmp_path / "bosch"
+    _write_minimal_bosch_cnc_source(source)
+
+    inspection = inspect_bosch_cnc_dataset(source)
+    assert inspection["csv_files"] == 2
+    assert inspection["quality_counts"] == {"bad": 1, "good": 1}
+
+    payload = ingest_bosch_cnc_dataset(
+        source=source,
+        out_dir=tmp_path / "bosch_out",
+        config=BoschCNCIngestConfig(window_s=0.4, stride_s=0.2, horizon_s=0.4, sample_rate_hz=10.0),
+    )
+
+    manifest = payload["manifest"]
+    assert manifest["total_windows"] == 6
+    assert manifest["label_counts"] == {"severe": 3, "stable": 3}
+    data = np.load(tmp_path / "bosch_out" / "dataset.npz")
+    assert data["sensor_windows"].shape == (6, 4, 3)
+    assert data["channel_names"].tolist() == ["x", "y", "z"]
+
+
+def test_cli_inspect_and_ingest_bosch_cnc(tmp_path: Path):
+    source = tmp_path / "bosch"
+    _write_minimal_bosch_cnc_source(source)
+    inspect_out = tmp_path / "bosch_inspection.json"
+    ingest_out = tmp_path / "bosch_cli_out"
+
+    assert main(["inspect-bosch-cnc", "--source", str(source), "--out", str(inspect_out)]) == 0
+    assert json.loads(inspect_out.read_text(encoding="utf-8"))["csv_files"] == 2
+    assert main(
+        [
+            "ingest-bosch-cnc",
+            "--source",
+            str(source),
+            "--out",
+            str(ingest_out),
+            "--window",
+            "0.4",
+            "--stride",
+            "0.2",
+            "--sample-rate",
+            "10",
             "--max-windows",
             "3",
         ]
@@ -392,6 +446,17 @@ def _write_minimal_kit_source(root: Path) -> None:
             for idx in range(8):
                 scale = 2.0 if trial.endswith("A01") else 1.0
                 writer.writerow({"CYCLE": idx, "LOAD|6": scale * (idx + 1), "CURRENT|6": scale * (idx % 3 + 1)})
+
+
+def _write_minimal_bosch_cnc_source(root: Path) -> None:
+    for quality, offset in (("good", 0.0), ("bad", 10.0)):
+        path = root / "M01" / "OP00" / quality / f"M01_fixture_OP00_{quality}.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["x", "y", "z"])
+            writer.writeheader()
+            for idx in range(8):
+                writer.writerow({"x": idx + offset, "y": 2 * idx + offset, "z": 3 * idx + offset})
 
 
 def _write_minimal_mt_cutting_source(root: Path) -> None:

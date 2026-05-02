@@ -19,6 +19,7 @@ from chatter_twin.counterfactual import (
     run_stability_margin_shadow_policy,
 )
 from chatter_twin.datasets import (
+    BoschCNCIngestConfig,
     ICNC_FILENAME,
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
@@ -26,10 +27,12 @@ from chatter_twin.datasets import (
     KIT_INDUSTRIAL_FILENAME,
     MTCuttingIngestConfig,
     download_icnc_dataset,
+    ingest_bosch_cnc_dataset,
     ingest_mt_cutting_dataset,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
     inspect_mt_cutting_dataset,
+    inspect_bosch_cnc_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     ingest_icnc_dataset,
@@ -474,6 +477,24 @@ def main(argv: list[str] | None = None) -> int:
     ingest_mt.add_argument("--max-experiments", type=int, default=None)
     ingest_mt.add_argument("--max-windows", type=int, default=None)
 
+    inspect_bosch = subparsers.add_parser("inspect-bosch-cnc")
+    inspect_bosch.add_argument("--source", type=Path, required=True)
+    inspect_bosch.add_argument("--out", type=Path, default=None)
+
+    ingest_bosch = subparsers.add_parser("ingest-bosch-cnc")
+    ingest_bosch.add_argument("--source", type=Path, required=True)
+    ingest_bosch.add_argument("--out", type=Path, required=True)
+    ingest_bosch.add_argument("--machines", default="")
+    ingest_bosch.add_argument("--operations", default="")
+    ingest_bosch.add_argument("--window", type=float, default=0.25)
+    ingest_bosch.add_argument("--stride", type=float, default=0.125)
+    ingest_bosch.add_argument("--horizon", type=float, default=0.5)
+    ingest_bosch.add_argument("--sample-rate", type=float, default=2_000.0)
+    ingest_bosch.add_argument("--spindle-rpm", type=float, default=9_000.0)
+    ingest_bosch.add_argument("--flute-count", type=int, default=4)
+    ingest_bosch.add_argument("--max-files", type=int, default=None)
+    ingest_bosch.add_argument("--max-windows", type=int, default=None)
+
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
     eval_rl.add_argument("--scenarios", default="stable,near_boundary,onset,unstable")
@@ -602,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_inspect_kit_industrial(args)
         case "inspect-mt-cutting":
             return _cmd_inspect_mt_cutting(args)
+        case "inspect-bosch-cnc":
+            return _cmd_inspect_bosch_cnc(args)
         case "inspect-kit-mat":
             return _cmd_inspect_kit_mat(args)
         case "download-icnc":
@@ -614,6 +637,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_ingest_kit_mat(args)
         case "ingest-mt-cutting":
             return _cmd_ingest_mt_cutting(args)
+        case "ingest-bosch-cnc":
+            return _cmd_ingest_bosch_cnc(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1394,6 +1419,15 @@ def _cmd_inspect_mt_cutting(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_inspect_bosch_cnc(args: argparse.Namespace) -> int:
+    payload = inspect_bosch_cnc_dataset(args.source)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_inspect_kit_mat(args: argparse.Namespace) -> int:
     payload = inspect_kit_synchronized_mat(
         source=args.source,
@@ -1534,6 +1568,41 @@ def _cmd_ingest_icnc(args: argparse.Namespace) -> int:
             default_feed_per_tooth_m=args.default_feed_per_tooth,
             include_unknown=args.include_unknown,
             max_packages_per_file=args.max_packages_per_file,
+            max_windows=args.max_windows,
+        ),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "sources": payload["sources"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_ingest_bosch_cnc(args: argparse.Namespace) -> int:
+    payload = ingest_bosch_cnc_dataset(
+        source=args.source,
+        out_dir=args.out,
+        machines=[machine.strip() for machine in args.machines.split(",") if machine.strip()],
+        operations=[operation.strip() for operation in args.operations.split(",") if operation.strip()],
+        config=BoschCNCIngestConfig(
+            window_s=args.window,
+            stride_s=args.stride,
+            horizon_s=args.horizon,
+            sample_rate_hz=args.sample_rate,
+            spindle_rpm=args.spindle_rpm,
+            flute_count=args.flute_count,
+            max_files=args.max_files,
             max_windows=args.max_windows,
         ),
     )

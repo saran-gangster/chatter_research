@@ -50,6 +50,10 @@ KIT_INDUSTRIAL_DOI = "10.35097/hvvwn1kfwf7qt48z"
 MT_CUTTING_GITHUB_URL = "https://github.com/purduelamm/mt_cutting_dataset"
 MT_CUTTING_DATASET_NAME = "CNC Machine Tool Cutting Sound Dataset"
 
+BOSCH_CNC_KAGGLE_REF = "maximilianfellhuber/cnc-machining-data"
+BOSCH_CNC_GITHUB_URL = "https://github.com/boschresearch/CNC_Machining"
+BOSCH_CNC_DATASET_NAME = "Bosch CNC Machining Data"
+
 
 @dataclass(frozen=True)
 class ICNCIngestConfig:
@@ -158,6 +162,36 @@ class MTCuttingIngestConfig:
             raise ValueError("sensors cannot be empty")
         if self.max_experiments is not None and self.max_experiments < 1:
             raise ValueError("max_experiments must be at least 1")
+        if self.max_windows is not None and self.max_windows < 1:
+            raise ValueError("max_windows must be at least 1")
+
+
+@dataclass(frozen=True)
+class BoschCNCIngestConfig:
+    window_s: float = 0.25
+    stride_s: float = 0.125
+    horizon_s: float = 0.50
+    sample_rate_hz: float = 2_000.0
+    spindle_rpm: float = 9_000.0
+    flute_count: int = 4
+    max_files: int | None = None
+    max_windows: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0:
+            raise ValueError("window_s must be positive")
+        if self.stride_s <= 0:
+            raise ValueError("stride_s must be positive")
+        if self.horizon_s <= 0:
+            raise ValueError("horizon_s must be positive")
+        if self.sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive")
+        if self.spindle_rpm <= 0:
+            raise ValueError("spindle_rpm must be positive")
+        if self.flute_count < 1:
+            raise ValueError("flute_count must be at least 1")
+        if self.max_files is not None and self.max_files < 1:
+            raise ValueError("max_files must be at least 1")
         if self.max_windows is not None and self.max_windows < 1:
             raise ValueError("max_windows must be at least 1")
 
@@ -566,6 +600,114 @@ def inspect_mt_cutting_dataset(source: Path) -> dict[str, object]:
     }
 
 
+def inspect_bosch_cnc_dataset(source: Path) -> dict[str, object]:
+    """Inspect the Bosch/Kaggle industrial CNC vibration dataset layout."""
+
+    files = _bosch_cnc_files(source)
+    by_machine: Counter[str] = Counter()
+    by_operation: Counter[str] = Counter()
+    by_label: Counter[str] = Counter()
+    for item in files:
+        by_machine[item["machine"]] += 1
+        by_operation[f"{item['machine']}_{item['operation']}"] += 1
+        by_label[item["quality"]] += 1
+    return {
+        "dataset": BOSCH_CNC_DATASET_NAME,
+        "source": str(source),
+        "kaggle_ref": BOSCH_CNC_KAGGLE_REF,
+        "github_url": BOSCH_CNC_GITHUB_URL,
+        "csv_files": len(files),
+        "machines": dict(sorted(by_machine.items())),
+        "operations": dict(sorted(by_operation.items())),
+        "quality_counts": dict(sorted(by_label.items())),
+    }
+
+
+def ingest_bosch_cnc_dataset(
+    *,
+    source: Path,
+    out_dir: Path,
+    machines: list[str] | None = None,
+    operations: list[str] | None = None,
+    config: BoschCNCIngestConfig | None = None,
+) -> dict[str, object]:
+    """Import Bosch industrial CNC vibration recordings into the replay schema."""
+
+    config = config or BoschCNCIngestConfig()
+    selected_machines = {item.strip() for item in machines or [] if item.strip()}
+    selected_operations = {item.strip() for item in operations or [] if item.strip()}
+    candidates = _bosch_cnc_files(source)
+    if selected_machines:
+        candidates = [item for item in candidates if item["machine"] in selected_machines]
+    if selected_operations:
+        candidates = [item for item in candidates if item["operation"] in selected_operations]
+    if config.max_files is not None:
+        candidates = candidates[: config.max_files]
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    windows: list[NDArray[np.float64]] = []
+    records: list[WindowRecord] = []
+    summaries: list[dict[str, object]] = []
+    episode_id = 0
+
+    for item in candidates:
+        if config.max_windows is not None and len(records) >= config.max_windows:
+            break
+        signal = _read_bosch_cnc_csv(item["path"])
+        remaining = None if config.max_windows is None else config.max_windows - len(records)
+        label = "stable" if item["quality"] == "good" else "severe"
+        path_windows, path_records, _ = _slice_icnc_package(
+            sensor_signal=signal,
+            scenario=f"{item['machine']}_{item['operation']}",
+            episode=episode_id,
+            package_index=episode_id,
+            starting_window_id=len(records),
+            starting_window_index=0,
+            sample_rate_hz=config.sample_rate_hz,
+            spindle_rpm=config.spindle_rpm,
+            label=label,
+            previous=_TemporalState(),
+            config=ICNCIngestConfig(
+                window_s=config.window_s,
+                stride_s=config.stride_s,
+                horizon_s=config.horizon_s,
+                flute_count=config.flute_count,
+                default_sample_rate_hz=config.sample_rate_hz,
+                default_spindle_rpm=config.spindle_rpm,
+            ),
+            max_windows=remaining,
+        )
+        path_records = attach_horizon_targets(path_records, HorizonConfig(horizon_s=config.horizon_s))
+        windows.extend(path_windows)
+        records.extend(path_records)
+        summaries.append(
+            {
+                "path": str(item["path"]),
+                "machine": item["machine"],
+                "operation": item["operation"],
+                "quality": item["quality"],
+                "label": label,
+                "samples": int(signal.shape[0]),
+                "windows": len(path_records),
+            }
+        )
+        episode_id += 1
+
+    if not records:
+        raise ValueError("No Bosch CNC replay windows produced; check filters and window size")
+
+    sensor_windows = np.stack(windows).astype(np.float32)
+    manifest = _bosch_cnc_manifest(records, summaries, config, sensor_windows)
+    _write_real_replay_dataset(out_dir, records, sensor_windows, manifest)
+    _write_bosch_cnc_readme(out_dir / "README.md", manifest, summaries, config)
+    return {
+        "manifest": asdict(manifest),
+        "sources": summaries,
+        "out_dir": str(out_dir),
+        "artifacts": list(manifest.artifacts),
+    }
+
+
 def ingest_mt_cutting_dataset(
     *,
     source: Path,
@@ -678,6 +820,36 @@ def ingest_mt_cutting_dataset(
         "out_dir": str(out_dir),
         "artifacts": list(manifest.artifacts),
     }
+
+
+def _bosch_cnc_files(source: Path) -> list[dict[str, object]]:
+    if not source.exists():
+        raise ValueError(f"Bosch CNC source does not exist: {source}")
+    files: list[dict[str, object]] = []
+    for path in sorted(source.glob("M*/OP*/*/*.csv")):
+        quality = path.parent.name
+        if quality not in {"good", "bad"}:
+            continue
+        operation = path.parent.parent.name
+        machine = path.parent.parent.parent.name
+        files.append({"path": path, "machine": machine, "operation": operation, "quality": quality})
+    if not files:
+        raise ValueError(f"No Bosch CNC CSV files found under {source}")
+    return files
+
+
+def _read_bosch_cnc_csv(path: Path) -> NDArray[np.float64]:
+    rows: list[list[float]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        missing = {"x", "y", "z"} - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
+        for row in reader:
+            rows.append([float(row["x"]), float(row["y"]), float(row["z"])])
+    if not rows:
+        raise ValueError(f"{path} contains no samples")
+    return np.asarray(rows, dtype=np.float64)
 
 
 def _mt_experiment_dirs(source: Path) -> list[Path]:
@@ -1862,6 +2034,44 @@ def _mt_cutting_manifest(
     )
 
 
+def _bosch_cnc_manifest(
+    records: list[WindowRecord],
+    source_summaries: list[dict[str, object]],
+    config: BoschCNCIngestConfig,
+    sensor_windows: NDArray[np.float32],
+) -> DatasetManifest:
+    counts = Counter(record.label for record in records)
+    scenarios = sorted({record.scenario for record in records})
+    return DatasetManifest(
+        schema_version="chatter-window-v5",
+        sample_rate_hz=result_sample_rate(records, sensor_windows),
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        channel_names=("x", "y", "z"),
+        scenarios=tuple(scenarios),
+        episodes_per_scenario=0,
+        total_windows=len(records),
+        label_counts=dict(sorted(counts.items())),
+        domain_randomization={
+            "enabled": False,
+            "source": "real_bosch_cnc_machining_vibration",
+        },
+        sampling_strategy={
+            "dataset": "bosch_cnc_machining_data",
+            "kaggle_ref": BOSCH_CNC_KAGGLE_REF,
+            "github_url": BOSCH_CNC_GITHUB_URL,
+            "max_files": config.max_files,
+            "max_windows": config.max_windows,
+            "source_files": source_summaries,
+            "modality": "2 kHz triaxial acceleration windows",
+            "label_source": "directory quality label: good -> stable, bad -> severe anomaly",
+            "note": "Bad labels are generic industrial machining anomalies, not chatter-specific annotations.",
+        },
+        horizon={"horizon_s": config.horizon_s},
+        artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    )
+
+
 def _write_real_replay_dataset(
     out_dir: Path,
     records: list[WindowRecord],
@@ -2051,6 +2261,57 @@ def _write_mt_cutting_readme(
             "- Labels are assigned per cutting path from the operator workbook, not per time-local onset.",
             "- This dataset is useful for real audio/current-window chatter validation, not closed-loop control validation.",
             "- Cutting context is imported when available, but no FRF, force, surface-finish, or controller-intervention trace is included.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_bosch_cnc_readme(
+    path: Path,
+    manifest: DatasetManifest,
+    source_summaries: list[dict[str, object]],
+    config: BoschCNCIngestConfig,
+) -> None:
+    quality_counts = Counter(str(item["quality"]) for item in source_summaries)
+    lines = [
+        "# Bosch CNC Machining Replay Dataset",
+        "",
+        "Imported from the Bosch/Kaggle industrial CNC machining vibration dataset into the local chatter replay schema.",
+        "",
+        f"Total windows: `{manifest.total_windows}`",
+        f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
+        f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
+        f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
+        f"Channels: `{', '.join(manifest.channel_names)}`",
+        f"Source recordings imported: `{len(source_summaries)}`",
+        "",
+        "## Label Counts",
+        "",
+        "| Label | Count |",
+        "|---|---:|",
+    ]
+    for label, count in manifest.label_counts.items():
+        lines.append(f"| {label} | {count} |")
+    lines.extend(["", "## Source Quality Counts", "", "| Quality | Recordings |", "|---|---:|"])
+    for quality, count in sorted(quality_counts.items()):
+        lines.append(f"| {quality} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Config",
+            "",
+            f"- `sample_rate_hz`: `{config.sample_rate_hz}`",
+            f"- `spindle_rpm`: `{config.spindle_rpm}`",
+            f"- `flute_count`: `{config.flute_count}`",
+            f"- `max_files`: `{config.max_files}`",
+            f"- `max_windows`: `{config.max_windows}`",
+            "",
+            "## Caveats",
+            "",
+            "- This is an industrial vibration anomaly benchmark, not a chatter-specific dataset.",
+            "- Use it for domain-shift, anomaly robustness, and sensor feature stress tests.",
+            "- Do not report these labels as direct chatter validation.",
             "",
         ]
     )
