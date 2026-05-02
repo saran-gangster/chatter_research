@@ -204,3 +204,107 @@ This produced `798` high-rate acceleration windows on the first bounded run,
 balanced between stable `IM-01F` and chatter-labeled `IM-02F-A01`. Treat that
 as a high-rate ingestion validation result only; the labels are still trial
 level. The next useful layer is pseudo-onset labeling inside `IM-02F-A01`.
+
+## KIT Synchronized Force+Acceleration Replay
+
+The current strongest public-data bridge uses the synchronized MATLAB files
+directly from `Data.zip` and imports all six calibrated high-rate channels:
+
+```bash
+uv run --extra mat chatter-twin ingest-kit-mat \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_mat_replay_force_accel_standardized_full \
+  --trials IM-01F,IM-02F-A01 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.5 \
+  --signal-names xAcceleration,yAcceleration,zAcceleration,xForce,yForce,zForce \
+  --standardize-signals
+```
+
+This produced `18,203` windows:
+
+| Trial | Label | Samples read | Windows | Signals |
+|---|---|---:|---:|---|
+| `IM-01F` | stable | 6,021,595 | 12,042 | 3-axis acceleration + 3-axis force |
+| `IM-02F-A01` | slight | 3,081,459 | 6,161 | 3-axis acceleration + 3-axis force |
+
+The channels are robust-standardized per trial and signal before feature
+extraction. This prevents force units from numerically swamping acceleration
+features in the pseudo-label score.
+
+Then generate exploratory time-local pseudo labels inside the chatter-labeled
+trial:
+
+```bash
+uv run chatter-twin pseudo-label-replay \
+  --dataset results/kit_mat_replay_force_accel_standardized_full \
+  --out results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --positive-scenarios IM-02F-A01 \
+  --horizon 0.5 \
+  --transition-floor 0.35 \
+  --slight-floor 0.6 \
+  --severe-floor 1.0
+```
+
+Pseudo-label output:
+
+| Item | Value |
+|---|---:|
+| Total windows | 18,203 |
+| Changed current labels | 6,148 |
+| Lead-time candidate windows | 102 |
+| Current chatter-positive windows | 22 |
+| Stable windows after relabeling | 17,925 |
+| Transition windows | 256 |
+| Slight windows | 13 |
+| Severe windows | 9 |
+
+The resulting horizon-risk sanity baseline is:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --out results/kit_mat_force_accel_pseudo_onset_horizon_baseline \
+  --model hist_gb \
+  --feature-set temporal \
+  --target horizon \
+  --split-mode row \
+  --test-fraction 0.3 \
+  --seed 509
+```
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 0.986 |
+| Test chatter F1 | 0.959 |
+| Test intervention F1 | 0.887 |
+| Test lead-time F1 | 0.952 |
+| Test lead-time recall | 0.938 |
+| Test lead-time mean detected lead | 0.217 s |
+
+And a conservative manual-threshold shadow replay:
+
+```bash
+uv run chatter-twin shadow-eval \
+  --model-dir results/kit_mat_force_accel_pseudo_onset_horizon_baseline \
+  --out results/kit_mat_force_accel_pseudo_onset_shadow_eval_manual_050 \
+  --threshold-source manual \
+  --warning-threshold 0.5 \
+  --warning-feed 0.92 \
+  --warning-spindle 1.04
+```
+
+| Metric | Value |
+|---|---:|
+| Warning fraction | 0.0066 |
+| Action fraction | 0.0075 |
+| Event F1 | 1.000 |
+| Event recall | 1.000 |
+| False warning episodes | 0 |
+| Relative MRR proxy | 0.9997 |
+
+Caveat: this is still an exploratory pseudo-label experiment, not final
+machine validation. Window-level lead-time metrics are the most useful sanity
+check here. Event-level lead time is not a publishable result because the row
+split scatters one physical chatter episode across train and test windows.

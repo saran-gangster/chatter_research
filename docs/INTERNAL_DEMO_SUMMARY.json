@@ -40,7 +40,7 @@
     "rl_shadow_replay_dir": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
     "shadow_eval_dir": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
     "shadow_review_gate_dir": "results/rl_td3_fixed_mrr2_shadow_gate_demo",
-    "test_status": "95 passed in 15.58s"
+    "test_status": "106 passed in 15.69s"
   },
   "controller_baselines": {
     "best_by_risk": {
@@ -105,7 +105,7 @@
     "path": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
     "status": "validated_synthetic_benchmark"
   },
-  "generated_at": "2026-05-02T14:11:29+00:00",
+  "generated_at": "2026-05-02T17:15:36+00:00",
   "promotion_gates": [
     {
       "failed_checks": [],
@@ -226,18 +226,19 @@
     "status": "shadow_policy_evaluated",
     "warning_fraction": 0.4
   },
-  "test_status": "95 passed in 15.58s",
+  "test_status": "106 passed in 15.69s",
   "validation_boundary": {
     "not_validated_yet": [
       "No MTConnect or controller API connection is implemented.",
-      "No synchronized high-rate accelerometer/audio/current data has been ingested.",
+      "No user-owned synchronized high-rate accelerometer/audio/current stream has been ingested.",
       "No real FRF/cutting-coefficient calibration or real CNC chatter cut has been run through this stack.",
       "No CNC write path exists or is approved."
     ],
     "validated_now": [
       "Simulator, risk estimator, controller comparisons, shielded RL replay, and promotion gates run end to end.",
       "The selected TD3 policy passes the offline shadow-review gate.",
-      "The same policy is blocked from live-shadow and hardware-actuation profiles."
+      "The same policy is blocked from live-shadow and hardware-actuation profiles.",
+      "Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks."
     ]
   }
 }

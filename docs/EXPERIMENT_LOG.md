@@ -3297,3 +3297,129 @@ trial. The next research step is to generate time-local pseudo-labels inside
 the chatter trial using non-tooth-harmonic energy, chatter-band growth, and
 force/acceleration agreement, then rerun early-warning metrics on those
 pseudo-onset labels.
+
+## 2026-05-02 - KIT Force+Acceleration Pseudo-Onset Baseline
+
+This update moves the KIT bridge from acceleration-only trial labels to a
+six-channel synchronized force+acceleration replay with exploratory time-local
+pseudo labels.
+
+Remote data path on the Lightning CPU machine:
+
+```bash
+~/work/chatter_research/data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip
+```
+
+Full replay import:
+
+```bash
+uv run --extra mat chatter-twin ingest-kit-mat \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_mat_replay_force_accel_standardized_full \
+  --trials IM-01F,IM-02F-A01 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.5 \
+  --signal-names xAcceleration,yAcceleration,zAcceleration,xForce,yForce,zForce \
+  --standardize-signals
+```
+
+Import result:
+
+| Trial | Samples read | Windows | Sample rate | Signals |
+|---|---:|---:|---:|---|
+| `IM-01F` | 6,021,595 | 12,042 | 10,000 Hz | `xAcceleration,yAcceleration,zAcceleration,xForce,yForce,zForce` |
+| `IM-02F-A01` | 3,081,459 | 6,161 | 10,000 Hz | `xAcceleration,yAcceleration,zAcceleration,xForce,yForce,zForce` |
+
+Exploratory pseudo-onset labeling:
+
+```bash
+uv run chatter-twin pseudo-label-replay \
+  --dataset results/kit_mat_replay_force_accel_standardized_full \
+  --out results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --positive-scenarios IM-02F-A01 \
+  --horizon 0.5 \
+  --transition-floor 0.35 \
+  --slight-floor 0.6 \
+  --severe-floor 1.0
+```
+
+Pseudo-label output:
+
+| Item | Value |
+|---|---:|
+| Total windows | 18,203 |
+| Changed current labels | 6,148 |
+| Lead-time candidate windows | 102 |
+| Current chatter-positive windows | 22 |
+| Stable windows after relabeling | 17,925 |
+| Transition windows | 256 |
+| Slight windows | 13 |
+| Severe windows | 9 |
+| Transition score threshold | 1.776 |
+| Slight score threshold | 15.794 |
+| Severe score threshold | 36.483 |
+
+The six-channel pseudo labels are richer than the earlier acceleration-only
+run, which produced only `157` transition windows, `5` slight windows, and `4`
+severe windows with the same exploratory floor settings.
+
+Horizon-risk baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --out results/kit_mat_force_accel_pseudo_onset_horizon_baseline \
+  --model hist_gb \
+  --feature-set temporal \
+  --target horizon \
+  --split-mode row \
+  --test-fraction 0.3 \
+  --seed 509
+```
+
+| Metric | Value |
+|---|---:|
+| Train windows | 12,743 |
+| Test windows | 5,460 |
+| Test accuracy | 0.986 |
+| Test chatter F1 | 0.959 |
+| Test intervention F1 | 0.887 |
+| Test lead-time F1 | 0.952 |
+| Test lead-time recall | 0.938 |
+| Test lead-time mean detected lead | 0.217 s |
+| Train-selected warning threshold | 0.05 |
+| Test oracle diagnostic threshold | 0.35 |
+
+Manual-threshold shadow recommendation replay:
+
+```bash
+uv run chatter-twin shadow-eval \
+  --model-dir results/kit_mat_force_accel_pseudo_onset_horizon_baseline \
+  --out results/kit_mat_force_accel_pseudo_onset_shadow_eval_manual_050 \
+  --threshold-source manual \
+  --warning-threshold 0.5 \
+  --warning-feed 0.92 \
+  --warning-spindle 1.04
+```
+
+| Metric | Value |
+|---|---:|
+| Warning threshold | 0.500 |
+| Warning fraction | 0.00659 |
+| Action fraction | 0.00751 |
+| Relative MRR proxy | 0.99973 |
+| Event F1 | 1.000 |
+| Event recall | 1.000 |
+| False warning episodes | 0 |
+
+The train-selected `0.05` threshold produced similar shadow behavior:
+`warning_fraction=0.00678`, `action_fraction=0.00769`,
+`relative_mrr_proxy=0.99972`, and `event_f1=1.000`.
+
+Interpretation: this is now a credible public-data bridge for the risk
+estimator and shadow recommendation layer. It is not a final validation result:
+the labels are exploratory pseudo labels, the split is a row split, and the
+event-level lead time is not publishable because one physical chatter episode
+is scattered across train/test windows. The useful result is the window-level
+early-warning sanity check on synchronized 10 kHz force+acceleration data.

@@ -69,10 +69,11 @@ def build_internal_demo_payload(config: InternalDemoConfig = InternalDemoConfig(
                 "Simulator, risk estimator, controller comparisons, shielded RL replay, and promotion gates run end to end.",
                 "The selected TD3 policy passes the offline shadow-review gate.",
                 "The same policy is blocked from live-shadow and hardware-actuation profiles.",
+                "Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks.",
             ],
             "not_validated_yet": [
                 "No MTConnect or controller API connection is implemented.",
-                "No synchronized high-rate accelerometer/audio/current data has been ingested.",
+                "No user-owned synchronized high-rate accelerometer/audio/current stream has been ingested.",
                 "No real FRF/cutting-coefficient calibration or real CNC chatter cut has been run through this stack.",
                 "No CNC write path exists or is approved.",
             ],
