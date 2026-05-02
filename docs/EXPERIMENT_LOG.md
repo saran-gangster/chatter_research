@@ -3539,3 +3539,137 @@ time-local labeling/segmentation across more KIT trials or another public
 dataset with multiple independent chatter onsets; the next hardware step is to
 collect our own synchronized sensor stream with known entry, cut, and surface
 validation.
+
+## 2026-05-02 - Purdue MT Cutting Sound Importer And Baseline
+
+Added a second public-data bridge for Purdue LAMM's CNC machine tool cutting
+sound dataset:
+
+```bash
+uv run chatter-twin mt-cutting-manifest \
+  --out data/raw/mt_cutting_dataset/source_manifest.json
+
+uv run chatter-twin inspect-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out data/raw/mt_cutting_dataset/inspection.json
+```
+
+The IMI subset has 18 experiment folders with three synchronized `48 kHz` WAV
+sensors, `cutting.csv` intervals, and operator chatter labels in
+`labeling_all_details.xlsx`. The importer maps the maximum operator label as
+`0 -> stable`, `1 -> slight`, and `2 -> severe`.
+
+New implementation:
+
+| Item | Path |
+|---|---|
+| Source manifest | `mt-cutting-manifest` |
+| Dataset inspection | `inspect-mt-cutting` |
+| Replay importer | `ingest-mt-cutting` |
+| XLSX parsing | standard library `zipfile` + `ElementTree`, no `openpyxl` dependency |
+| Tests | `tests/test_datasets.py` fixture with WAV, cutting CSV, and workbook |
+
+Validation:
+
+```bash
+uv run --extra dev pytest -q
+```
+
+Result: `114 passed in 18.16s`.
+
+Bounded sensor-1 replay:
+
+```bash
+uv run chatter-twin ingest-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out results/mt_cutting_sensor1_replay_12k \
+  --sensors 1 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --max-windows 12000
+```
+
+| Label | Windows |
+|---|---:|
+| stable | 5,913 |
+| slight | 2,389 |
+| severe | 3,698 |
+
+Episode-held-out current-window baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_sensor1_replay_12k \
+  --out results/mt_cutting_sensor1_current_episode_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode episode \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 512
+```
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 0.692 |
+| Test chatter F1 | 0.777 |
+| Test intervention F1 | 0.777 |
+
+Added a `scenario` split mode for stricter experiment-folder holdout:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_sensor1_replay_12k \
+  --out results/mt_cutting_sensor1_current_scenario_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode scenario \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 513
+```
+
+| Metric | Value |
+|---|---:|
+| Held-out experiments | `Exp0-2`, `Exp1-1-2`, `Exp1-3`, `Exp1-8`, `Exp2-1` |
+| Test accuracy | 0.566 |
+| Test chatter F1 | 0.637 |
+| Test intervention F1 | 0.637 |
+
+All-three-sensor fusion was tested with the same replay cap and scenario
+holdout:
+
+```bash
+uv run chatter-twin ingest-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out results/mt_cutting_3sensor_replay_12k \
+  --sensors 0,1,2 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --max-windows 12000
+
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_3sensor_replay_12k \
+  --out results/mt_cutting_3sensor_current_scenario_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode scenario \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 514
+```
+
+| Input | Test accuracy | Test chatter F1 |
+|---|---:|---:|
+| sensor 1 only | 0.566 | 0.637 |
+| sensors 0,1,2 norm | 0.680 | 0.550 |
+
+Lesson: Purdue is now the better public benchmark for real current-window
+audio chatter recognition because it has many independent labeled cutting
+paths. It still cannot validate early-warning or control timing by itself,
+because labels are path-level and no intervention trajectory exists.

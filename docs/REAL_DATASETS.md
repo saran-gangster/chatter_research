@@ -6,6 +6,7 @@
 |---|---|---|---|
 | i-CNC Zenodo | current-window chatter signal validation | real 10 kHz vibration plus chatter status | package-level labels, no process depth/feed/FRF/context |
 | KIT industrial CNC milling | process-context/anomaly validation | continuous controller data, force, acceleration, NC/CAD, anomaly documentation | 44.6 GB tar, still not closed-loop intervention data |
+| Purdue MT cutting sound | external audio chatter validation | many labeled cutting paths with 48 kHz sound and operator chatter labels | path-level labels, no force/FRF/surface validation or interventions |
 
 ## i-CNC Zenodo
 
@@ -341,3 +342,119 @@ the time-block result is the current honest benchmark. The model reacts to some
 late chatter windows but does not warn before the first later chatter event.
 Increasing the pseudo-label horizon to `1.0 s` did not fix this; time-block
 lead-time and event-warning F1 both fell to `0.000`.
+
+## Purdue MT Cutting Sound Dataset
+
+The second public bridge is Purdue LAMM's CNC machine tool cutting sound
+dataset:
+
+- Repository: <https://github.com/purduelamm/mt_cutting_dataset>
+- IMI lab subset: 18 experiment folders, three synchronized 48 kHz sound
+  sensors, one `cutting.csv` per experiment, and `labeling_all_details.xlsx`
+  with operator chatter labels.
+- KRPM industry subset: one longer industry recording with cutting intervals,
+  useful later for domain shift but without the same detailed IMI chatter
+  workbook.
+
+Write the source manifest:
+
+```bash
+uv run chatter-twin mt-cutting-manifest \
+  --out data/raw/mt_cutting_dataset/source_manifest.json
+```
+
+Clone the dataset on the data machine:
+
+```bash
+git clone --depth 1 https://github.com/purduelamm/mt_cutting_dataset.git \
+  data/raw/mt_cutting_dataset/repo
+```
+
+Inspect labels:
+
+```bash
+uv run chatter-twin inspect-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out data/raw/mt_cutting_dataset/inspection.json
+```
+
+The current importer reads the IMI workbook with the standard-library XLSX
+parser, maps `max(Chatter operator 1, Chatter operator 2)` as `0 -> stable`,
+`1 -> slight`, and `2 -> severe`, and slices WAV intervals from `cutting.csv`.
+
+First bounded replay from the near-spindle/internal sound sensor:
+
+```bash
+uv run chatter-twin ingest-mt-cutting \
+  --source data/raw/mt_cutting_dataset/repo \
+  --out results/mt_cutting_sensor1_replay_12k \
+  --sensors 1 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --max-windows 12000
+```
+
+Replay label counts:
+
+| Label | Windows |
+|---|---:|
+| stable | 5,913 |
+| slight | 2,389 |
+| severe | 3,698 |
+
+Episode-held-out current-window baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_sensor1_replay_12k \
+  --out results/mt_cutting_sensor1_current_episode_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode episode \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 512
+```
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 0.692 |
+| Test chatter F1 | 0.777 |
+| Test intervention F1 | 0.777 |
+
+Experiment-folder holdout is stricter:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/mt_cutting_sensor1_replay_12k \
+  --out results/mt_cutting_sensor1_current_scenario_baseline_12k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode scenario \
+  --test-fraction 0.3 \
+  --validation-fraction 0.2 \
+  --seed 513
+```
+
+| Metric | Value |
+|---|---:|
+| Held-out experiments | `Exp0-2`, `Exp1-1-2`, `Exp1-3`, `Exp1-8`, `Exp2-1` |
+| Test accuracy | 0.566 |
+| Test chatter F1 | 0.637 |
+| Test intervention F1 | 0.637 |
+
+An all-three-sensor import was also tested with the same 12k cap and scenario
+holdout:
+
+| Input | Test accuracy | Test chatter F1 |
+|---|---:|---:|
+| sensor 1 only | 0.566 | 0.637 |
+| sensors 0,1,2 norm | 0.680 | 0.550 |
+
+Interpretation: Purdue gives a much better multi-cut public chatter benchmark
+than KIT for current-window signal validation. It still does not solve
+early-warning validation because labels are per cutting path, not onset
+timestamps.
