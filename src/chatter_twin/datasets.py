@@ -155,14 +155,15 @@ def ingest_icnc_dataset(
     all_windows: list[NDArray[np.float64]] = []
     all_records: list[WindowRecord] = []
     source_summaries: list[dict[str, object]] = []
+    next_episode_id = 0
 
-    for episode, csv_source in enumerate(csv_sources):
+    for csv_source in csv_sources:
         if config.max_windows is not None and len(all_records) >= config.max_windows:
             break
         remaining_windows = None if config.max_windows is None else config.max_windows - len(all_records)
         windows, records, summary = _ingest_icnc_csv(
             csv_source,
-            episode=episode,
+            episode_start=next_episode_id,
             starting_window_id=len(all_records),
             config=config,
             max_windows=remaining_windows,
@@ -170,6 +171,7 @@ def ingest_icnc_dataset(
         all_windows.extend(windows)
         all_records.extend(records)
         source_summaries.append(summary)
+        next_episode_id += int(summary["packages_kept"])
 
     if not all_records:
         raise ValueError("No replay windows produced; reduce the window size or raise package/window limits")
@@ -230,17 +232,17 @@ def _open_csv_source(source: _CsvSource) -> Iterator[object]:
 def _ingest_icnc_csv(
     csv_source: _CsvSource,
     *,
-    episode: int,
+    episode_start: int,
     starting_window_id: int,
     config: ICNCIngestConfig,
     max_windows: int | None,
 ) -> tuple[list[NDArray[np.float64]], list[WindowRecord], dict[str, object]]:
     _raise_csv_field_limit()
     package_count = 0
+    kept_packages = 0
     skipped_packages = 0
     windows: list[NDArray[np.float64]] = []
     records: list[WindowRecord] = []
-    previous = _TemporalState()
     with _open_csv_source(csv_source) as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
@@ -269,27 +271,30 @@ def _ingest_icnc_csv(
             if label == "unknown" and not config.include_unknown:
                 skipped_packages += 1
                 continue
+            episode_id = episode_start + kept_packages
             package_windows, package_records, previous = _slice_icnc_package(
                 sensor_signal=np.column_stack([x_channel, y_channel]),
                 scenario=Path(csv_source.path).stem,
-                episode=episode,
+                episode=episode_id,
                 package_index=package_count - 1,
                 starting_window_id=starting_window_id + len(records),
-                starting_window_index=len(records),
+                starting_window_index=0,
                 sample_rate_hz=sample_rate_hz,
                 spindle_rpm=spindle_rpm,
                 label=label,
-                previous=previous,
+                previous=_TemporalState(),
                 config=config,
                 max_windows=None if max_windows is None else max_windows - len(records),
             )
+            package_records = attach_horizon_targets(package_records, HorizonConfig(horizon_s=config.horizon_s))
             windows.extend(package_windows)
             records.extend(package_records)
+            kept_packages += 1
 
-    records = attach_horizon_targets(records, HorizonConfig(horizon_s=config.horizon_s))
     summary = {
         "path": csv_source.path,
         "packages_read": package_count,
+        "packages_kept": kept_packages,
         "packages_skipped": skipped_packages,
         "windows": len(records),
         "label_counts": dict(sorted(Counter(record.label for record in records).items())),
@@ -334,9 +339,7 @@ def _slice_icnc_package(
     if sensor_signal.shape[0] < window_samples:
         return [], [], previous
 
-    package_duration_s = sensor_signal.shape[0] / sample_rate_hz
-    package_offset_s = package_index * package_duration_s
-    episode_duration_s = max((package_index + 1) * package_duration_s, config.window_s)
+    episode_duration_s = max(sensor_signal.shape[0] / sample_rate_hz, config.window_s)
     ewma_alpha = 0.35
     windows: list[NDArray[np.float64]] = []
     records: list[WindowRecord] = []
@@ -347,8 +350,8 @@ def _slice_icnc_package(
             break
         stop = start + window_samples
         window = sensor_signal[start:stop]
-        start_time_s = package_offset_s + start / sample_rate_hz
-        end_time_s = package_offset_s + (stop - 1) / sample_rate_hz
+        start_time_s = start / sample_rate_hz
+        end_time_s = (stop - 1) / sample_rate_hz
         features = extract_signal_features(
             window,
             sample_rate_hz,
@@ -650,10 +653,11 @@ def _write_icnc_readme(path: Path, manifest: DatasetManifest, source_summaries: 
     ]
     for label, count in manifest.label_counts.items():
         lines.append(f"| {label} | {count} |")
-    lines.extend(["", "## Sources", "", "| Source | Packages | Skipped | Windows |", "|---|---:|---:|---:|"])
+    lines.extend(["", "## Sources", "", "| Source | Packages | Kept | Skipped | Windows |", "|---|---:|---:|---:|---:|"])
     for source in source_summaries:
         lines.append(
-            f"| `{source['path']}` | {source['packages_read']} | {source['packages_skipped']} | {source['windows']} |"
+            f"| `{source['path']}` | {source['packages_read']} | {source['packages_kept']} | "
+            f"{source['packages_skipped']} | {source['windows']} |"
         )
     lines.extend(
         [
