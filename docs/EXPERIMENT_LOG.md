@@ -3010,3 +3010,92 @@ Demo conclusion:
 Lesson: the good internal demo is now complete as a software artifact. It shows
 the full offline decision stack working end to end and makes the boundary clear:
 real CNC validation is still the next result barrier.
+
+## 2026-05-02 - i-CNC Public Dataset First Pass
+
+Added the i-CNC Zenodo real-data workflow and ran the first bounded import on
+the Lightning CPU box.
+
+Source:
+
+| Field | Value |
+|---|---|
+| Dataset | i-CNC Zenodo record `15308467` |
+| Raw file | `data/raw/icnc/i-CNC Dataset.zip` |
+| Raw size | `2,989,101,603` bytes |
+| MD5 | `5edb62f27b89159f804f423134bb6ac3` |
+| Verification | passed |
+
+Importer changes:
+
+- `download-icnc` writes a source manifest and verifies the raw zip size/MD5.
+- `ingest-icnc` imports the zip, extracted directory, or one CSV into the replay schema.
+- `No Machining`, `SensorError`, and other unknown packages are skipped by default.
+- Each retained i-CNC measurement package is treated as its own replay episode,
+  so `train-risk --split-mode episode` can hold out whole packages instead of
+  leaking adjacent windows from the same package.
+
+Cutting-only bounded import:
+
+```bash
+uv run chatter-twin ingest-icnc \
+  --source "data/raw/icnc/i-CNC Dataset.zip" \
+  --out results/icnc_replay_cutting_pkg_1000pkg \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --max-packages-per-file 1000
+```
+
+| Field | Value |
+|---|---:|
+| Packages read | 2000 |
+| Packages kept | 578 |
+| Packages skipped | 1422 |
+| Replay windows | 4046 |
+| Stable windows | 3570 |
+| Slight/chatter windows | 476 |
+
+First real-data signal baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/icnc_replay_cutting_pkg_1000pkg \
+  --out results/icnc_risk_temporal_pkg_baseline_1000pkg \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode episode \
+  --validation-fraction 0.25
+```
+
+| Metric | Value |
+|---|---:|
+| Train groups | 405 |
+| Test groups | 173 |
+| Test accuracy | 0.906 |
+| Test macro F1 | 0.746 |
+| Test chatter precision | 0.469 |
+| Test chatter recall | 0.648 |
+| Test chatter F1 | 0.544 |
+| Test event-warning F1 | 0.000 |
+| Test lead-time positive windows | 0 |
+
+Confusion matrix on the test split, label order
+`stable, transition, slight, severe, unknown`:
+
+| Actual \\ Predicted | stable | transition | slight | severe | unknown |
+|---|---:|---:|---:|---:|---:|
+| stable | 1029 | 0 | 77 | 0 | 0 |
+| transition | 0 | 0 | 0 | 0 | 0 |
+| slight | 37 | 0 | 68 | 0 | 0 |
+| severe | 0 | 0 | 0 | 0 | 0 |
+| unknown | 0 | 0 | 0 | 0 | 0 |
+
+Lesson: i-CNC is useful for current-window signal validation and domain-shift
+checks, but this bounded subset is not an onset-control validation dataset.
+The labels are package-level stable/chatter indicators; after package-level
+episode splitting there are no positive lead-time windows in the test split.
+Do not use these numbers to claim closed-loop suppression or calibrated
+distance-to-chatter. Use them to harden ingestion, signal features, and
+external chatter classification before moving to richer logged CNC data.

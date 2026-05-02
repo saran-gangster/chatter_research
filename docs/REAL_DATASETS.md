@@ -54,7 +54,8 @@ uv run chatter-twin ingest-icnc \
 By default the importer skips `No Machining`, `SensorError`, and other unknown
 status rows so the first replay dataset is cutting-only. Add
 `--include-unknown` only when you intentionally want a raw operational-state
-dataset with `unknown` labels preserved.
+dataset with `unknown` labels preserved. Each retained measurement package is
+stored as one replay episode so episode splits hold out whole packages.
 
 Then train a first real-data signal baseline:
 
@@ -77,3 +78,10 @@ dataset does not expose a calibrated machining context. Use `temporal` or
 `base` feature sets first; `profile` and `interaction` feature sets are more
 appropriate for synthetic/calibrated replay datasets with real feed, depth, and
 cutting-coefficient metadata.
+
+The first bounded run on the Lightning CPU box used 1000 raw packages from each
+CSV, kept 578 cutting packages, and produced 4046 replay windows. A package-held
+out histogram gradient boosting baseline reached `0.544` chatter F1 and `0.648`
+chatter recall on current-window labels. Event-warning and lead-time metrics
+were not meaningful on that subset because the dataset labels whole packages,
+not stable-to-chatter onset trajectories.
