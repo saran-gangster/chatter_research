@@ -62,24 +62,64 @@ def test_cli_pseudo_label_replay(tmp_path: Path):
     assert manifest["sampling_strategy"]["pseudo_labeling"]["method"] == "stable_robust_score_quantile"
 
 
+def test_pseudo_label_label_mode_preserves_stable_paths_in_mixed_scenario(tmp_path: Path):
+    source = tmp_path / "source"
+    _write_pseudo_source_from_specs(
+        source,
+        [
+            ("stable_trial", "stable", "0", 0.0, 1.0),
+            ("stable_trial", "stable", "0", 0.1, 1.0),
+            ("mixed_exp", "stable", "1", 0.0, 100000.0),
+            ("mixed_exp", "slight", "2", 0.0, 1.0),
+            ("mixed_exp", "slight", "2", 0.1, 1000000.0),
+            ("mixed_exp", "slight", "2", 0.2, 100000000.0),
+        ],
+    )
+
+    payload = pseudo_label_replay_dataset(
+        dataset_dir=source,
+        out_dir=tmp_path / "pseudo",
+        config=PseudoLabelConfig(
+            score_columns=("rms", "chatter_band_energy", "non_tooth_harmonic_ratio"),
+            positive_mode="label",
+            horizon_s=0.2,
+        ),
+    )
+
+    assert payload["positive_mode"] == "label"
+    assert payload["candidate_windows"] == 3
+    rows = list(csv.DictReader((tmp_path / "pseudo" / "windows.csv").open(newline="", encoding="utf-8")))
+    high_stable = next(row for row in rows if row["scenario"] == "mixed_exp" and row["episode"] == "1")
+    assert high_stable["label"] == "stable"
+    assert high_stable["source_label"] == "stable"
+    assert high_stable["pseudo_label_candidate"] == "False"
+    positive_rows = [row for row in rows if row["scenario"] == "mixed_exp" and row["episode"] == "2"]
+    assert [row["label"] for row in positive_rows] == ["stable", "slight", "severe"]
+    assert all(row["source_label"] == "slight" for row in positive_rows)
+
+
 def _write_pseudo_source(path: Path) -> None:
+    specs = [
+        ("stable_trial", "stable", "0", 0.0, 1.0),
+        ("stable_trial", "stable", "0", 0.1, 1.0),
+        ("stable_trial", "stable", "0", 0.2, 1.0),
+        ("chatter_trial", "slight", "1", 0.0, 1.0),
+        ("chatter_trial", "slight", "1", 0.1, 31.6227766017),
+        ("chatter_trial", "slight", "1", 0.2, 1000.0),
+        ("chatter_trial", "slight", "1", 0.3, 100000.0),
+    ]
+    _write_pseudo_source_from_specs(path, specs)
+
+
+def _write_pseudo_source_from_specs(path: Path, specs: list[tuple[str, str, str, float, float]]) -> None:
     path.mkdir(parents=True)
     rows = []
-    specs = [
-        ("stable_trial", "stable", 0.0, 1.0),
-        ("stable_trial", "stable", 0.1, 1.0),
-        ("stable_trial", "stable", 0.2, 1.0),
-        ("chatter_trial", "slight", 0.0, 1.0),
-        ("chatter_trial", "slight", 0.1, 31.6227766017),
-        ("chatter_trial", "slight", 0.2, 1000.0),
-        ("chatter_trial", "slight", 0.3, 100000.0),
-    ]
-    for idx, (scenario, label, start, value) in enumerate(specs):
+    for idx, (scenario, label, episode, start, value) in enumerate(specs):
         rows.append(
             {
                 "window_id": str(idx),
                 "scenario": scenario,
-                "episode": "0" if scenario == "stable_trial" else "1",
+                "episode": episode,
                 "start_time_s": str(start),
                 "end_time_s": str(start + 0.09),
                 "label": label,

@@ -31,12 +31,14 @@ LOG_SCORE_COLUMNS = frozenset(
         "non_tooth_harmonic_ratio_ewma",
     }
 )
+POSITIVE_MODES = frozenset({"scenario", "episode", "label"})
 
 
 @dataclass(frozen=True)
 class PseudoLabelConfig:
     score_columns: tuple[str, ...] = DEFAULT_PSEUDO_SCORE_COLUMNS
     positive_scenarios: tuple[str, ...] = ()
+    positive_mode: str = "scenario"
     horizon_s: float | None = None
     transition_quantile: float = 0.95
     slight_quantile: float = 0.99
@@ -48,6 +50,8 @@ class PseudoLabelConfig:
     def __post_init__(self) -> None:
         if not self.score_columns:
             raise ValueError("score_columns cannot be empty")
+        if self.positive_mode not in POSITIVE_MODES:
+            raise ValueError(f"positive_mode must be one of: {', '.join(sorted(POSITIVE_MODES))}")
         if self.horizon_s is not None and self.horizon_s <= 0:
             raise ValueError("horizon_s must be positive")
         for name, value in (
@@ -81,6 +85,11 @@ def pseudo_label_replay_dataset(
     }
     if not positive_scenarios:
         raise ValueError("No positive scenarios found; pass positive_scenarios explicitly")
+    positive_episodes = {
+        (row["scenario"], row["episode"])
+        for row in rows
+        if row.get("label") in CHATTER_POSITIVE_LABELS and row["scenario"] in positive_scenarios
+    }
 
     baseline = _fit_baseline(stable_rows, config.score_columns)
     stable_scores = _score_rows(stable_rows, baseline, config.score_columns)
@@ -88,13 +97,20 @@ def pseudo_label_replay_dataset(
 
     updated_rows: list[dict[str, str]] = []
     changed = 0
+    candidate_windows = 0
     label_counts_before = Counter(row["label"] for row in rows)
     score_by_window_id: dict[str, float] = {}
     for row in rows:
         score = _score_row(row, baseline, config.score_columns)
         score_by_window_id[row["window_id"]] = score
         updated = dict(row)
-        if row["scenario"] in positive_scenarios:
+        candidate = _is_pseudo_label_candidate(row, config, positive_scenarios, positive_episodes)
+        updated["source_label"] = row.get("source_label") or row.get("label", "unknown")
+        updated["source_label_id"] = row.get("source_label_id") or row.get("label_id", "")
+        updated["pseudo_label_candidate"] = str(candidate)
+        updated["pseudo_label_score"] = f"{score:.12g}"
+        if candidate:
+            candidate_windows += 1
             new_label = _score_to_label(score, thresholds)
             if new_label != row["label"]:
                 changed += 1
@@ -115,9 +131,11 @@ def pseudo_label_replay_dataset(
         "source_dataset": str(dataset_dir),
         "total_windows": len(updated_rows),
         "changed_windows": changed,
+        "candidate_windows": candidate_windows,
         "label_counts_before": dict(sorted(label_counts_before.items())),
         "label_counts_after": dict(sorted(Counter(row["label"] for row in updated_rows).items())),
         "positive_scenarios": sorted(positive_scenarios),
+        "positive_mode": config.positive_mode,
         "thresholds": thresholds,
         "manifest": manifest,
         "artifacts": ["dataset.npz", "windows.csv", "manifest.json", "README.md"],
@@ -194,6 +212,24 @@ def _score_to_label(score: float, thresholds: dict[str, float]) -> str:
     if score >= thresholds["transition"]:
         return "transition"
     return "stable"
+
+
+def _is_pseudo_label_candidate(
+    row: dict[str, str],
+    config: PseudoLabelConfig,
+    positive_scenarios: set[str],
+    positive_episodes: set[tuple[str, str]],
+) -> bool:
+    if row["scenario"] not in positive_scenarios:
+        return False
+    match config.positive_mode:
+        case "scenario":
+            return True
+        case "episode":
+            return (row["scenario"], row["episode"]) in positive_episodes
+        case "label":
+            return row.get("label") in CHATTER_POSITIVE_LABELS
+    raise ValueError(f"Unsupported positive_mode: {config.positive_mode}")
 
 
 def _set_current_label(row: dict[str, str], label: str) -> None:
@@ -278,6 +314,7 @@ def _write_readme(
     score_by_window_id: dict[str, float],
 ) -> None:
     label_counts = Counter(row["label"] for row in rows)
+    candidate_count = sum(_bool(row.get("pseudo_label_candidate")) for row in rows)
     positive_rows = [row for row in rows if row["label"] in CHATTER_POSITIVE_LABELS]
     lead_rows = [
         row
@@ -291,6 +328,8 @@ def _write_readme(
         f"Source dataset: `{source_dataset}`",
         "",
         f"Total windows: `{len(rows)}`",
+        f"Pseudo-label mode: `{config.positive_mode}`",
+        f"Pseudo-label candidate windows: `{candidate_count}`",
         f"Changed current labels: `{changed}`",
         f"Lead-time candidate windows: `{len(lead_rows)}`",
         f"Current chatter-positive windows: `{len(positive_rows)}`",

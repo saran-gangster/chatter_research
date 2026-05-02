@@ -55,7 +55,12 @@ from chatter_twin.offline import (
     train_risk_model,
 )
 from chatter_twin.policy_selection import PolicySelectionConfig, select_rl_policy
-from chatter_twin.pseudo_label import DEFAULT_PSEUDO_SCORE_COLUMNS, PseudoLabelConfig, pseudo_label_replay_dataset
+from chatter_twin.pseudo_label import (
+    DEFAULT_PSEUDO_SCORE_COLUMNS,
+    POSITIVE_MODES,
+    PseudoLabelConfig,
+    pseudo_label_replay_dataset,
+)
 from chatter_twin.realdata import parse_real_data_run_spec, write_real_data_benchmark, write_risk_error_analysis
 from chatter_twin.risk import estimate_chatter_risk
 from chatter_twin.replay import DomainRandomizationConfig, HorizonConfig, TransitionFocusConfig, WindowSpec, export_synthetic_dataset
@@ -249,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     pseudo_label.add_argument("--out", type=Path, required=True)
     pseudo_label.add_argument("--score-columns", default=",".join(DEFAULT_PSEUDO_SCORE_COLUMNS))
     pseudo_label.add_argument("--positive-scenarios", default="")
+    pseudo_label.add_argument("--positive-mode", choices=sorted(POSITIVE_MODES), default="scenario")
     pseudo_label.add_argument("--horizon", type=float, default=None)
     pseudo_label.add_argument("--transition-quantile", type=float, default=0.95)
     pseudo_label.add_argument("--slight-quantile", type=float, default=0.99)
@@ -965,6 +971,7 @@ def _cmd_pseudo_label_replay(args: argparse.Namespace) -> int:
         config=PseudoLabelConfig(
             score_columns=tuple(column.strip() for column in args.score_columns.split(",") if column.strip()),
             positive_scenarios=tuple(scenario.strip() for scenario in args.positive_scenarios.split(",") if scenario.strip()),
+            positive_mode=args.positive_mode,
             horizon_s=args.horizon,
             transition_quantile=args.transition_quantile,
             slight_quantile=args.slight_quantile,
@@ -981,9 +988,11 @@ def _cmd_pseudo_label_replay(args: argparse.Namespace) -> int:
                 "source_dataset": payload["source_dataset"],
                 "total_windows": payload["total_windows"],
                 "changed_windows": payload["changed_windows"],
+                "candidate_windows": payload["candidate_windows"],
                 "label_counts_before": payload["label_counts_before"],
                 "label_counts_after": payload["label_counts_after"],
                 "positive_scenarios": payload["positive_scenarios"],
+                "positive_mode": payload["positive_mode"],
                 "thresholds": payload["thresholds"],
                 "artifacts": payload["artifacts"],
             },
