@@ -1,0 +1,8 @@
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated experiment outputs can be large; keep reproducible commands in docs.
+results/
