@@ -3099,3 +3099,113 @@ episode splitting there are no positive lead-time windows in the test split.
 Do not use these numbers to claim closed-loop suppression or calibrated
 distance-to-chatter. Use them to harden ingestion, signal features, and
 external chatter classification before moving to richer logged CNC data.
+
+## 2026-05-02 - KIT Industrial Dataset Controller Replay
+
+Downloaded and inspected the KIT/RADAR industrial CNC milling dataset on the
+Lightning CPU box.
+
+Source verification:
+
+| Field | Value |
+|---|---|
+| Dataset | RADAR record `hvvwn1kfwf7qt48z` |
+| DOI | `10.35097/hvvwn1kfwf7qt48z` |
+| Raw tar | `data/raw/kit_industrial/10.35097-hvvwn1kfwf7qt48z.tar` |
+| Expected size | `44,584,092,672` bytes |
+| Observed size | `44,584,092,672` bytes |
+| Payload zip | `data/dataset/Data.zip` |
+| Tar members | `13` |
+| Data.zip members | `434` |
+
+Inspection command:
+
+```bash
+uv run chatter-twin inspect-kit-industrial \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out data/raw/kit_industrial/kit_inspection.json
+```
+
+Inspection result:
+
+| Field | Value |
+|---|---:|
+| Trials | 33 |
+| Processed `hfdata.csv` files | 33 |
+| Synchronized `.mat` files | 33 |
+| Thermoforming mold trials | 7 |
+| Injection mold trials | 9 |
+| Impeller trials | 17 |
+
+Explicit chatter trial found in the DoE:
+
+| Trial | Component | Comment | Spindle | Feedrate | Depth | Stepover |
+|---|---|---|---:|---:|---:|---:|
+| `IM-02F-A01` | Injection mold | Finishing with Chatter | 4450 rpm | 799.576 mm/min | 0.5 mm | 0.5 mm |
+
+First controller-only replay import:
+
+```bash
+uv run chatter-twin ingest-kit-industrial \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_controller_replay_im01f_vs_chatter \
+  --trials IM-01F,IM-02F-A01 \
+  --window 1.0 \
+  --stride 0.5 \
+  --horizon 2.0 \
+  --sample-rate 500
+```
+
+| Trial | Label | Rows | Windows |
+|---|---|---:|---:|
+| `IM-01F` | stable | 308,454 | 1,232 |
+| `IM-02F-A01` | slight | 160,792 | 642 |
+
+Broader stable-set replay import:
+
+```bash
+uv run chatter-twin ingest-kit-industrial \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_controller_replay_stable_set_vs_chatter \
+  --trials TF-01,TF-02,IM-01F,IM-01R,IMP-BASE,IMP-01,IM-02F-A01 \
+  --window 1.0 \
+  --stride 0.5 \
+  --horizon 2.0 \
+  --sample-rate 500
+```
+
+| Field | Value |
+|---|---:|
+| Total windows | 7,562 |
+| Stable windows | 6,920 |
+| Slight/chatter windows | 642 |
+| Signal columns | `LOAD|6`, `CURRENT|6` |
+
+Within-window controller-signal sanity baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_controller_replay_stable_set_vs_chatter \
+  --out results/kit_controller_risk_row_baseline_stable_set_vs_chatter \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode row \
+  --test-fraction 0.3 \
+  --seed 506
+```
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 1.000 |
+| Test chatter F1 | 1.000 |
+| Test intervention F1 | 1.000 |
+| Test event-warning F1 | 0.000 |
+| Test lead-time F1 | 0.000 |
+
+Lesson: the KIT bridge is now usable, but the current adapter is
+controller-only and the only explicit chatter label is trial-level. The perfect
+row-split score is a smoke-test result, not a publishable generalization claim;
+it likely reflects trial/process-regime separation. The next serious upgrade is
+to ingest the synchronized MATLAB acceleration/force signals and create
+time-local labels or pseudo-labels inside `IM-02F-A01`.

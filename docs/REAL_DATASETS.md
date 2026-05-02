@@ -145,6 +145,30 @@ tar -tf data/raw/kit_industrial/10.35097-hvvwn1kfwf7qt48z.tar \
 ```
 
 Then extract only documentation and one experiment folder for schema discovery.
-The first useful adapter should target the synchronized MATLAB files and/or
-preprocessed controller CSV files, then map acceleration/force/controller
-windows into the existing replay schema.
+Inspect the payload and DoE labels:
+
+```bash
+uv run chatter-twin inspect-kit-industrial \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out data/raw/kit_industrial/kit_inspection.json
+```
+
+The first adapter imports processed controller `hfdata.csv` signals into the
+replay schema. It uses DoE comments for coarse trial-level labels; the explicit
+chatter trial is `IM-02F-A01`.
+
+```bash
+uv run chatter-twin ingest-kit-industrial \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_controller_replay_stable_set_vs_chatter \
+  --trials TF-01,TF-02,IM-01F,IM-01R,IMP-BASE,IMP-01,IM-02F-A01 \
+  --window 1.0 \
+  --stride 0.5 \
+  --horizon 2.0 \
+  --sample-rate 500
+```
+
+Current caveat: this is a controller-only bridge using `LOAD|6` and
+`CURRENT|6`. It is useful for industrial-domain smoke tests, but the serious
+next adapter should target the synchronized MATLAB acceleration/force files and
+derive time-local chatter/onset labels inside the chatter trial.
