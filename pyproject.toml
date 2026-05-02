@@ -19,6 +19,9 @@ rl = [
   "stable-baselines3>=2.3",
   "torch>=2.2,<2.6",
 ]
+mat = [
+  "h5py>=3.11",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }

@@ -286,6 +286,40 @@ def inspect_kit_industrial_dataset(source: Path) -> dict[str, object]:
     }
 
 
+def inspect_kit_synchronized_mat(
+    *,
+    source: Path,
+    trial: str,
+    max_datasets: int = 200,
+) -> dict[str, object]:
+    """Inspect one KIT synchronized MATLAB v7.3 file and list HDF5 datasets."""
+
+    if max_datasets < 1:
+        raise ValueError("max_datasets must be at least 1")
+    with _open_kit_source(source) as kit:
+        trial_record = _kit_trial_by_id(kit, trial)
+        member = _kit_synchronized_mat_member(trial_record)
+        with _open_kit_mat_h5(kit, member) as handle:
+            datasets = _h5_dataset_summary(handle, max_datasets=max_datasets)
+            root_keys = sorted(str(key) for key in handle.keys())
+    return {
+        "source": str(source),
+        "trial": trial,
+        "member": member,
+        "root_keys": root_keys,
+        "datasets_listed": len(datasets),
+        "datasets_truncated": len(datasets) >= max_datasets,
+        "datasets": datasets,
+        "candidate_numeric_time_series": [
+            item
+            for item in datasets
+            if item["kind"] == "numeric"
+            and len(item["shape"]) >= 1
+            and max(item["shape"] or [0]) >= 100
+        ],
+    }
+
+
 def ingest_kit_industrial_dataset(
     *,
     source: Path,
@@ -381,6 +415,19 @@ class _KITSource:
         root = _kit_data_root(self.source)
         return (root / member).read_bytes()
 
+    def filesystem_member_path(self, member: str) -> Path | None:
+        if self._archive is not None:
+            return None
+        root = _kit_data_root(self.source)
+        candidate = root / member
+        if candidate.exists():
+            return candidate
+        if member.startswith("Data/"):
+            candidate = root / member.removeprefix("Data/")
+            if candidate.exists():
+                return candidate
+        return None
+
     @contextmanager
     def open_text(self, member: str) -> Iterator[object]:
         if self._archive is not None:
@@ -446,6 +493,14 @@ def _kit_doe_trials(kit: _KITSource) -> list[dict[str, object]]:
         }
         trials.append(trial)
     return trials
+
+
+def _kit_trial_by_id(kit: _KITSource, trial_id: str) -> dict[str, object]:
+    trials = _kit_doe_trials(kit)
+    for trial in trials:
+        if str(trial["trial"]) == trial_id:
+            return trial
+    raise ValueError(f"KIT trial not found in DoE: {trial_id}")
 
 
 def _read_xlsx_rows(payload: bytes) -> list[list[str]]:
@@ -515,6 +570,93 @@ def _kit_hfdata_member(trial: dict[str, object]) -> str:
     component = str(trial["component"])
     trial_id = str(trial["trial"])
     return f"Data/Dataset/{component}/{trial_id}/processed_data/{trial_id}_hfdata.csv"
+
+
+def _kit_synchronized_mat_member(trial: dict[str, object]) -> str:
+    component = str(trial["component"])
+    trial_id = str(trial["trial"])
+    return f"Data/Dataset/{component}/{trial_id}/processed_data/{trial_id}_synchronized.mat"
+
+
+@contextmanager
+def _open_kit_mat_h5(kit: _KITSource, member: str) -> Iterator[object]:
+    try:
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError("Install the `mat` extra to inspect KIT MATLAB v7.3 files: uv run --extra mat ...") from exc
+
+    filesystem_path = kit.filesystem_member_path(member)
+    if filesystem_path is not None:
+        with h5py.File(filesystem_path, "r") as handle:
+            yield handle
+        return
+
+    payload = kit.read_bytes(member)
+    with h5py.File(io.BytesIO(payload), "r") as handle:
+        yield handle
+
+
+def _h5_dataset_summary(handle: object, *, max_datasets: int) -> list[dict[str, object]]:
+    import h5py
+
+    datasets: list[dict[str, object]] = []
+
+    def visitor(path: str, obj: object) -> None:
+        if len(datasets) >= max_datasets:
+            return
+        if not isinstance(obj, h5py.Dataset):
+            return
+        dtype = str(obj.dtype)
+        shape = tuple(int(dim) for dim in obj.shape)
+        attrs = {str(key): _jsonable_h5_attr(value) for key, value in obj.attrs.items()}
+        datasets.append(
+            {
+                "path": path,
+                "shape": list(shape),
+                "dtype": dtype,
+                "kind": _h5_kind(dtype),
+                "attrs": attrs,
+                "sample": _h5_sample(obj),
+            }
+        )
+
+    handle.visititems(visitor)
+    return datasets
+
+
+def _h5_kind(dtype: str) -> str:
+    if dtype.startswith("float") or dtype.startswith("int") or dtype.startswith("uint"):
+        return "numeric"
+    if "ref" in dtype.lower() or "object" in dtype.lower():
+        return "reference"
+    return "other"
+
+
+def _h5_sample(dataset: object) -> list[object]:
+    try:
+        array = np.asarray(dataset)
+        if array.size == 0:
+            return []
+        flat = array.reshape(-1)[:5]
+        return [_jsonable_h5_attr(value) for value in flat]
+    except Exception:
+        return []
+
+
+def _jsonable_h5_attr(value: object) -> object:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        if value.size > 12:
+            value = value.reshape(-1)[:12]
+        return [_jsonable_h5_attr(item) for item in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_h5_attr(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _ingest_kit_trial(

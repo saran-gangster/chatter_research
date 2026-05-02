@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from chatter_twin.cli import main
 from chatter_twin.datasets import (
@@ -13,6 +14,7 @@ from chatter_twin.datasets import (
     ingest_kit_industrial_dataset,
     ingest_icnc_dataset,
     inspect_kit_industrial_dataset,
+    inspect_kit_synchronized_mat,
     write_icnc_source_manifest,
 )
 
@@ -190,6 +192,23 @@ def test_cli_inspect_and_ingest_kit_industrial(tmp_path: Path):
     assert status == 0
     saved_manifest = json.loads((ingest_out / "manifest.json").read_text(encoding="utf-8"))
     assert saved_manifest["label_counts"] == {"slight": 2, "stable": 2}
+
+
+def test_inspect_kit_synchronized_mat_directory(tmp_path: Path):
+    h5py = pytest.importorskip("h5py")
+    source = tmp_path / "Data"
+    _write_minimal_kit_source(source)
+    mat_path = source / "Dataset" / "Injection mold" / "IM-02F-A01" / "processed_data" / "IM-02F-A01_synchronized.mat"
+    with h5py.File(mat_path, "w") as handle:
+        handle.create_dataset("acceleration/x", data=np.arange(128, dtype=np.float64))
+        handle.create_dataset("force/Fx", data=np.arange(64, dtype=np.float64))
+
+    payload = inspect_kit_synchronized_mat(source=source, trial="IM-02F-A01", max_datasets=10)
+
+    paths = {item["path"] for item in payload["datasets"]}
+    assert "acceleration/x" in paths
+    assert "force/Fx" in paths
+    assert payload["candidate_numeric_time_series"]
 
 
 def _write_vector_icnc_csv(path: Path) -> None:

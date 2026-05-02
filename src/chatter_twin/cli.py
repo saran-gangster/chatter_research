@@ -26,6 +26,7 @@ from chatter_twin.datasets import (
     download_icnc_dataset,
     ingest_kit_industrial_dataset,
     inspect_kit_industrial_dataset,
+    inspect_kit_synchronized_mat,
     ingest_icnc_dataset,
     write_icnc_source_manifest,
     write_kit_industrial_source_manifest,
@@ -362,6 +363,12 @@ def main(argv: list[str] | None = None) -> int:
     inspect_kit.add_argument("--source", type=Path, required=True)
     inspect_kit.add_argument("--out", type=Path, default=None)
 
+    inspect_kit_mat = subparsers.add_parser("inspect-kit-mat")
+    inspect_kit_mat.add_argument("--source", type=Path, required=True)
+    inspect_kit_mat.add_argument("--trial", default="IM-02F-A01")
+    inspect_kit_mat.add_argument("--max-datasets", type=int, default=200)
+    inspect_kit_mat.add_argument("--out", type=Path, default=None)
+
     download_icnc = subparsers.add_parser("download-icnc")
     download_icnc.add_argument("--out", type=Path, default=Path("data/raw/icnc") / ICNC_FILENAME)
     download_icnc.add_argument("--manifest-out", type=Path, default=Path("data/raw/icnc/source_manifest.json"))
@@ -512,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_kit_industrial_manifest(args)
         case "inspect-kit-industrial":
             return _cmd_inspect_kit_industrial(args)
+        case "inspect-kit-mat":
+            return _cmd_inspect_kit_mat(args)
         case "download-icnc":
             return _cmd_download_icnc(args)
         case "ingest-icnc":
@@ -1186,6 +1195,19 @@ def _cmd_kit_industrial_manifest(args: argparse.Namespace) -> int:
 
 def _cmd_inspect_kit_industrial(args: argparse.Namespace) -> int:
     payload = inspect_kit_industrial_dataset(args.source)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_inspect_kit_mat(args: argparse.Namespace) -> int:
+    payload = inspect_kit_synchronized_mat(
+        source=args.source,
+        trial=args.trial,
+        max_datasets=args.max_datasets,
+    )
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
