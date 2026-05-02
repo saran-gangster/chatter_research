@@ -37,6 +37,13 @@ ICNC_FILENAME = "i-CNC Dataset.zip"
 ICNC_SIZE_BYTES = 2_989_101_603
 ICNC_MD5 = "5edb62f27b89159f804f423134bb6ac3"
 
+KIT_INDUSTRIAL_RECORD_URL = "https://radar.kit.edu/radar/en/dataset/hvvwn1kfwf7qt48z"
+KIT_INDUSTRIAL_METADATA_URL = "https://radar.kit.edu/radar/en/export/hvvwn1kfwf7qt48z/exportdatacite"
+KIT_INDUSTRIAL_DOWNLOAD_URL = "https://radar.kit.edu/radar-backend/archives/hvvwn1kfwf7qt48z/versions/1/content"
+KIT_INDUSTRIAL_FILENAME = "10.35097-hvvwn1kfwf7qt48z.tar"
+KIT_INDUSTRIAL_SIZE_BYTES = 44_584_092_672
+KIT_INDUSTRIAL_DOI = "10.35097/hvvwn1kfwf7qt48z"
+
 
 @dataclass(frozen=True)
 class ICNCIngestConfig:
@@ -99,6 +106,41 @@ def icnc_source_manifest() -> dict[str, object]:
 
 def write_icnc_source_manifest(path: Path) -> dict[str, object]:
     manifest = icnc_source_manifest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def kit_industrial_source_manifest() -> dict[str, object]:
+    return {
+        "dataset": "A Multimodal Dataset for Process Monitoring and Anomaly Detection in Industrial CNC Milling",
+        "record_url": KIT_INDUSTRIAL_RECORD_URL,
+        "metadata_url": KIT_INDUSTRIAL_METADATA_URL,
+        "download_url": KIT_INDUSTRIAL_DOWNLOAD_URL,
+        "filename": KIT_INDUSTRIAL_FILENAME,
+        "size_bytes": KIT_INDUSTRIAL_SIZE_BYTES,
+        "doi": KIT_INDUSTRIAL_DOI,
+        "license": "CC-BY-4.0",
+        "published": "2025-07-01",
+        "machine": "DMC 60 H with Siemens SINUMERIK 840D",
+        "experiments": 33,
+        "duration": "about 6 hours",
+        "modalities": {
+            "controller": "SINUMERIK Edge JSON/CSV at 500 Hz",
+            "external_sensors": "force and acceleration MATLAB files at 10 kHz",
+            "synchronized": "combined MATLAB timetable per experiment",
+            "context": "NC programs, CAD/STP models, design-of-experiment documentation",
+        },
+        "bridge_value": (
+            "continuous multimodal process-context data with explicit anomaly types, "
+            "including chatter; suitable for signal/context validation before real closed-loop CNC data"
+        ),
+        "download_note": "The public content URL is a 44.6 GB tar; use a resumable tool such as curl -L -C -.",
+    }
+
+
+def write_kit_industrial_source_manifest(path: Path) -> dict[str, object]:
+    manifest = kit_industrial_source_manifest()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest

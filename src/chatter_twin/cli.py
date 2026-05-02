@@ -21,9 +21,11 @@ from chatter_twin.counterfactual import (
 from chatter_twin.datasets import (
     ICNC_FILENAME,
     ICNCIngestConfig,
+    KIT_INDUSTRIAL_FILENAME,
     download_icnc_dataset,
     ingest_icnc_dataset,
     write_icnc_source_manifest,
+    write_kit_industrial_source_manifest,
 )
 from chatter_twin.controllers import make_controller
 from chatter_twin.demo import InternalDemoConfig, write_internal_demo_report
@@ -350,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     icnc_manifest = subparsers.add_parser("icnc-manifest")
     icnc_manifest.add_argument("--out", type=Path, required=True)
 
+    kit_manifest = subparsers.add_parser("kit-industrial-manifest")
+    kit_manifest.add_argument("--out", type=Path, default=Path("data/raw/kit_industrial/source_manifest.json"))
+
     download_icnc = subparsers.add_parser("download-icnc")
     download_icnc.add_argument("--out", type=Path, default=Path("data/raw/icnc") / ICNC_FILENAME)
     download_icnc.add_argument("--manifest-out", type=Path, default=Path("data/raw/icnc/source_manifest.json"))
@@ -484,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_internal_demo_report(args)
         case "icnc-manifest":
             return _cmd_icnc_manifest(args)
+        case "kit-industrial-manifest":
+            return _cmd_kit_industrial_manifest(args)
         case "download-icnc":
             return _cmd_download_icnc(args)
         case "ingest-icnc":
@@ -1123,6 +1130,29 @@ def _cmd_icnc_manifest(args: argparse.Namespace) -> int:
                 "filename": manifest["filename"],
                 "size_bytes": manifest["size_bytes"],
                 "md5": manifest["md5"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_kit_industrial_manifest(args: argparse.Namespace) -> int:
+    manifest = write_kit_industrial_source_manifest(args.out)
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "record_url": manifest["record_url"],
+                "download_url": manifest["download_url"],
+                "filename": manifest["filename"],
+                "size_bytes": manifest["size_bytes"],
+                "resumable_curl": (
+                    "curl -L -C - --fail "
+                    f"-o data/raw/kit_industrial/{KIT_INDUSTRIAL_FILENAME} "
+                    f"'{manifest['download_url']}'"
+                ),
             },
             indent=2,
             sort_keys=True,

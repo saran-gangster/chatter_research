@@ -1,5 +1,14 @@
 # Real Dataset On-Ramp
 
+## Dataset Ladder
+
+| Dataset | Use Now | Gap It Covers | Main Limitation |
+|---|---|---|---|
+| i-CNC Zenodo | current-window chatter signal validation | real 10 kHz vibration plus chatter status | package-level labels, no process depth/feed/FRF/context |
+| KIT industrial CNC milling | process-context/anomaly validation | continuous controller data, force, acceleration, NC/CAD, anomaly documentation | 44.6 GB tar, still not closed-loop intervention data |
+
+## i-CNC Zenodo
+
 The first external validation target is the i-CNC Zenodo dataset:
 
 - Record: <https://zenodo.org/records/15308467>
@@ -85,3 +94,57 @@ out histogram gradient boosting baseline reached `0.544` chatter F1 and `0.648`
 chatter recall on current-window labels. Event-warning and lead-time metrics
 were not meaningful on that subset because the dataset labels whole packages,
 not stable-to-chatter onset trajectories.
+
+## KIT Industrial CNC Milling
+
+The next bridge dataset is KIT/RADAR record `hvvwn1kfwf7qt48z`:
+
+- Record: <https://radar.kit.edu/radar/en/dataset/hvvwn1kfwf7qt48z>
+- DOI: `10.35097/hvvwn1kfwf7qt48z`
+- License: `CC-BY-4.0`
+- Download format: `application/x-tar`
+- Size: `44,584,092,672` bytes, about `44.6 GB`
+- Machine: DMC 60 H with Siemens SINUMERIK 840D
+- Coverage: `33` experiments and about `6` hours of milling data
+- Signals: controller data at `500 Hz`, force and acceleration at `10 kHz`,
+  plus synchronized MATLAB files, NC programs, CAD/STP models, and
+  design-of-experiment documentation.
+
+Write the source manifest:
+
+```bash
+uv run chatter-twin kit-industrial-manifest \
+  --out data/raw/kit_industrial/source_manifest.json
+```
+
+Download the tar with resume support:
+
+```bash
+mkdir -p data/raw/kit_industrial
+curl -L -C - --fail \
+  -o data/raw/kit_industrial/10.35097-hvvwn1kfwf7qt48z.tar \
+  "https://radar.kit.edu/radar-backend/archives/hvvwn1kfwf7qt48z/versions/1/content"
+```
+
+Verify the downloaded size before extracting:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+path = Path("data/raw/kit_industrial/10.35097-hvvwn1kfwf7qt48z.tar")
+print(path.stat().st_size)
+assert path.stat().st_size == 44_584_092_672
+PY
+```
+
+Do not extract the whole archive blindly. First inspect the members:
+
+```bash
+tar -tf data/raw/kit_industrial/10.35097-hvvwn1kfwf7qt48z.tar \
+  > data/raw/kit_industrial/tar_members.txt
+```
+
+Then extract only documentation and one experiment folder for schema discovery.
+The first useful adapter should target the synchronized MATLAB files and/or
+preprocessed controller CSV files, then map acceleration/force/controller
+windows into the existing replay schema.
