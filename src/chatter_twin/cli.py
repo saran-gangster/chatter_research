@@ -21,8 +21,11 @@ from chatter_twin.counterfactual import (
 from chatter_twin.datasets import (
     ICNC_FILENAME,
     ICNCIngestConfig,
+    KITIndustrialIngestConfig,
     KIT_INDUSTRIAL_FILENAME,
     download_icnc_dataset,
+    ingest_kit_industrial_dataset,
+    inspect_kit_industrial_dataset,
     ingest_icnc_dataset,
     write_icnc_source_manifest,
     write_kit_industrial_source_manifest,
@@ -355,6 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     kit_manifest = subparsers.add_parser("kit-industrial-manifest")
     kit_manifest.add_argument("--out", type=Path, default=Path("data/raw/kit_industrial/source_manifest.json"))
 
+    inspect_kit = subparsers.add_parser("inspect-kit-industrial")
+    inspect_kit.add_argument("--source", type=Path, required=True)
+    inspect_kit.add_argument("--out", type=Path, default=None)
+
     download_icnc = subparsers.add_parser("download-icnc")
     download_icnc.add_argument("--out", type=Path, default=Path("data/raw/icnc") / ICNC_FILENAME)
     download_icnc.add_argument("--manifest-out", type=Path, default=Path("data/raw/icnc/source_manifest.json"))
@@ -374,6 +381,18 @@ def main(argv: list[str] | None = None) -> int:
     ingest_icnc.add_argument("--include-unknown", action="store_true")
     ingest_icnc.add_argument("--max-packages-per-file", type=int, default=None)
     ingest_icnc.add_argument("--max-windows", type=int, default=None)
+
+    ingest_kit = subparsers.add_parser("ingest-kit-industrial")
+    ingest_kit.add_argument("--source", type=Path, required=True)
+    ingest_kit.add_argument("--out", type=Path, required=True)
+    ingest_kit.add_argument("--trials", default="IM-01F,IM-02F-A01")
+    ingest_kit.add_argument("--window", type=float, default=1.0)
+    ingest_kit.add_argument("--stride", type=float, default=0.5)
+    ingest_kit.add_argument("--horizon", type=float, default=2.0)
+    ingest_kit.add_argument("--sample-rate", type=float, default=500.0)
+    ingest_kit.add_argument("--signal-columns", default="LOAD|6,CURRENT|6")
+    ingest_kit.add_argument("--include-other-anomalies", action="store_true")
+    ingest_kit.add_argument("--max-windows", type=int, default=None)
 
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
@@ -491,10 +510,14 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_icnc_manifest(args)
         case "kit-industrial-manifest":
             return _cmd_kit_industrial_manifest(args)
+        case "inspect-kit-industrial":
+            return _cmd_inspect_kit_industrial(args)
         case "download-icnc":
             return _cmd_download_icnc(args)
         case "ingest-icnc":
             return _cmd_ingest_icnc(args)
+        case "ingest-kit-industrial":
+            return _cmd_ingest_kit_industrial(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1161,6 +1184,15 @@ def _cmd_kit_industrial_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_inspect_kit_industrial(args: argparse.Namespace) -> int:
+    payload = inspect_kit_industrial_dataset(args.source)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_download_icnc(args: argparse.Namespace) -> int:
     payload = download_icnc_dataset(
         out_path=args.out,
@@ -1168,6 +1200,40 @@ def _cmd_download_icnc(args: argparse.Namespace) -> int:
         skip_existing=not args.force,
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_ingest_kit_industrial(args: argparse.Namespace) -> int:
+    signal_columns = tuple(column.strip() for column in args.signal_columns.split(",") if column.strip())
+    payload = ingest_kit_industrial_dataset(
+        source=args.source,
+        out_dir=args.out,
+        trials=[trial.strip() for trial in args.trials.split(",") if trial.strip()],
+        config=KITIndustrialIngestConfig(
+            window_s=args.window,
+            stride_s=args.stride,
+            horizon_s=args.horizon,
+            sample_rate_hz=args.sample_rate,
+            signal_columns=signal_columns,  # type: ignore[arg-type]
+            include_other_anomalies=args.include_other_anomalies,
+            max_windows=args.max_windows,
+        ),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "sources": payload["sources"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

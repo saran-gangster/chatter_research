@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import re
 import sys
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator
+from xml.etree import ElementTree as ET
 
 import numpy as np
 from numpy.typing import NDArray
@@ -76,6 +78,31 @@ class ICNCIngestConfig:
             raise ValueError("default_feed_per_tooth_m must be positive")
         if self.max_packages_per_file is not None and self.max_packages_per_file < 1:
             raise ValueError("max_packages_per_file must be at least 1")
+        if self.max_windows is not None and self.max_windows < 1:
+            raise ValueError("max_windows must be at least 1")
+
+
+@dataclass(frozen=True)
+class KITIndustrialIngestConfig:
+    window_s: float = 1.0
+    stride_s: float = 0.5
+    horizon_s: float = 2.0
+    sample_rate_hz: float = 500.0
+    signal_columns: tuple[str, str] = ("LOAD|6", "CURRENT|6")
+    include_other_anomalies: bool = False
+    max_windows: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0:
+            raise ValueError("window_s must be positive")
+        if self.stride_s <= 0:
+            raise ValueError("stride_s must be positive")
+        if self.horizon_s <= 0:
+            raise ValueError("horizon_s must be positive")
+        if self.sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive")
+        if len(self.signal_columns) != 2:
+            raise ValueError("signal_columns must contain exactly two columns")
         if self.max_windows is not None and self.max_windows < 1:
             raise ValueError("max_windows must be at least 1")
 
@@ -230,6 +257,349 @@ def ingest_icnc_dataset(
     }
 
 
+def inspect_kit_industrial_dataset(source: Path) -> dict[str, object]:
+    """Inspect the KIT/RADAR payload without extracting the full dataset."""
+
+    with _open_kit_source(source) as kit:
+        members = kit.members()
+        trials = _kit_doe_trials(kit)
+    trial_count = len(trials)
+    chatter_trials = [trial for trial in trials if _kit_comment_to_label(trial.get("comment", "")) in CHATTER_POSITIVE_LABELS]
+    component_counts = Counter(str(trial["component"]) for trial in trials)
+    return {
+        "source": str(source),
+        "members": len(members),
+        "processed_hfdata_files": sum(1 for member in members if member.endswith("_hfdata.csv")),
+        "synchronized_mat_files": sum(1 for member in members if member.endswith("_synchronized.mat")),
+        "trials": trial_count,
+        "component_counts": dict(sorted(component_counts.items())),
+        "chatter_trials": chatter_trials,
+        "trial_comments": [
+            {
+                "trial": trial["trial"],
+                "component": trial["component"],
+                "comment": trial.get("comment", ""),
+            }
+            for trial in trials
+            if trial.get("comment")
+        ],
+    }
+
+
+def ingest_kit_industrial_dataset(
+    *,
+    source: Path,
+    out_dir: Path,
+    trials: list[str] | None = None,
+    config: KITIndustrialIngestConfig | None = None,
+) -> dict[str, object]:
+    """Import KIT industrial controller replay windows from processed hfdata CSV files."""
+
+    config = config or KITIndustrialIngestConfig()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = {trial.strip() for trial in trials or [] if trial.strip()}
+    windows: list[NDArray[np.float64]] = []
+    records: list[WindowRecord] = []
+    summaries: list[dict[str, object]] = []
+
+    with _open_kit_source(source) as kit:
+        doe_trials = _kit_doe_trials(kit)
+        trial_by_id = {str(trial["trial"]): trial for trial in doe_trials}
+        if selected:
+            missing = sorted(selected - set(trial_by_id))
+            if missing:
+                raise ValueError(f"KIT trials not found in DoE: {', '.join(missing)}")
+            candidates = [trial_by_id[trial_id] for trial_id in sorted(selected)]
+        else:
+            candidates = [
+                trial
+                for trial in doe_trials
+                if _kit_comment_to_label(trial.get("comment", "")) != "unknown"
+                or bool(config.include_other_anomalies)
+            ]
+
+        for episode_id, trial in enumerate(candidates):
+            if config.max_windows is not None and len(records) >= config.max_windows:
+                break
+            label = _kit_comment_to_label(trial.get("comment", ""))
+            if label == "unknown" and not config.include_other_anomalies:
+                continue
+            remaining = None if config.max_windows is None else config.max_windows - len(records)
+            trial_windows, trial_records, summary = _ingest_kit_trial(
+                kit,
+                trial=trial,
+                label=label,
+                episode=episode_id,
+                starting_window_id=len(records),
+                config=config,
+                max_windows=remaining,
+            )
+            windows.extend(trial_windows)
+            records.extend(trial_records)
+            summaries.append(summary)
+
+    if not records:
+        raise ValueError("No KIT replay windows produced; select at least one stable or chatter trial")
+
+    sensor_windows = np.stack(windows).astype(np.float32)
+    manifest = _kit_manifest(records, summaries, config, sensor_windows)
+    _write_real_replay_dataset(out_dir, records, sensor_windows, manifest)
+    _write_kit_readme(out_dir / "README.md", manifest, summaries, config)
+    return {
+        "manifest": asdict(manifest),
+        "sources": summaries,
+        "out_dir": str(out_dir),
+        "artifacts": list(manifest.artifacts),
+    }
+
+
+class _KITSource:
+    def __init__(self, source: Path):
+        self.source = source
+        self._archive: zipfile.ZipFile | None = None
+
+    def __enter__(self) -> "_KITSource":
+        if self.source.is_file() and self.source.suffix.lower() == ".zip":
+            self._archive = zipfile.ZipFile(self.source)
+        elif not self.source.exists():
+            raise ValueError(f"KIT source does not exist: {self.source}")
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if self._archive is not None:
+            self._archive.close()
+
+    def members(self) -> list[str]:
+        if self._archive is not None:
+            return sorted(self._archive.namelist())
+        root = _kit_data_root(self.source)
+        return sorted(str(path.relative_to(root)).replace("\\", "/") for path in root.rglob("*") if path.is_file())
+
+    def read_bytes(self, member: str) -> bytes:
+        if self._archive is not None:
+            return self._archive.read(member)
+        root = _kit_data_root(self.source)
+        return (root / member).read_bytes()
+
+    @contextmanager
+    def open_text(self, member: str) -> Iterator[object]:
+        if self._archive is not None:
+            with self._archive.open(member, "r") as raw:
+                wrapper = io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
+                try:
+                    yield wrapper
+                finally:
+                    wrapper.detach()
+            return
+        root = _kit_data_root(self.source)
+        with (root / member).open(newline="", encoding="utf-8-sig") as handle:
+            yield handle
+
+
+def _open_kit_source(source: Path) -> _KITSource:
+    return _KITSource(source)
+
+
+def _kit_data_root(source: Path) -> Path:
+    if source.name == "Data" and source.is_dir():
+        return source
+    if (source / "Data").is_dir():
+        return source / "Data"
+    return source
+
+
+def _kit_doe_trials(kit: _KITSource) -> list[dict[str, object]]:
+    rows = _read_xlsx_rows(kit.read_bytes("Data/Descriptive/DoE/DoE.xlsx" if kit._archive is not None else "Descriptive/DoE/DoE.xlsx"))
+    trials: list[dict[str, object]] = []
+    component: str | None = None
+    headers: list[str] | None = None
+    for row in rows:
+        first = row[0].strip() if row else ""
+        if first in {"Thermoforming mold", "Injection mold", "Impeller"}:
+            component = first
+            headers = None
+            continue
+        if first == "Trial":
+            headers = row
+            continue
+        if component is None or headers is None or not first:
+            continue
+        values = {headers[idx]: row[idx] for idx in range(min(len(headers), len(row))) if headers[idx]}
+        trial = {
+            "trial": first,
+            "component": component,
+            "comment": values.get("Comment", ""),
+            "nc_code": values.get("NC-Code", ""),
+            "spindle_rpm": _positive_float(values.get("Spindle Speed [U/min]"), 0.0),
+            "feedrate_mm_min": _positive_float(values.get("Feedrate [mm/min]"), 0.0),
+            "feed_per_tooth_mm": _positive_float(values.get("fz [mm]"), 0.0),
+            "flutes": int(round(_positive_float(values.get("Number of teeth"), 1.0))),
+            "axial_depth_mm": _positive_float(
+                values.get("Cutting depth [mm]") or values.get("Optimal Cutting depth [mm]"),
+                0.0,
+            ),
+            "radial_depth_mm": _kit_overlap_midpoint(
+                values.get("Overlap [mm]") or values.get("Optimal Overlap [mm]"),
+            ),
+            "material": values.get("Material", ""),
+            "tool": values.get("Tools", ""),
+        }
+        trials.append(trial)
+    return trials
+
+
+def _read_xlsx_rows(payload: bytes) -> list[list[str]]:
+    ns = {
+        "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+    with zipfile.ZipFile(io.BytesIO(payload)) as workbook:
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in workbook.namelist():
+            root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+            for item in root.findall("a:si", ns):
+                shared.append("".join(text.text or "" for text in item.findall(".//a:t", ns)))
+        book = ET.fromstring(workbook.read("xl/workbook.xml"))
+        rels = ET.fromstring(workbook.read("xl/_rels/workbook.xml.rels"))
+        relmap = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        rows: list[list[str]] = []
+        for sheet in book.findall("a:sheets/a:sheet", ns):
+            rel_id = sheet.attrib["{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"]
+            root = ET.fromstring(workbook.read("xl/" + relmap[rel_id].lstrip("/")))
+            for row in root.findall("a:sheetData/a:row", ns):
+                values: list[str] = []
+                for cell in row.findall("a:c", ns):
+                    idx = _xlsx_column_index(cell.attrib.get("r", ""))
+                    while len(values) <= idx:
+                        values.append("")
+                    value = cell.find("a:v", ns)
+                    text = "" if value is None else value.text or ""
+                    if cell.attrib.get("t") == "s" and text:
+                        text = shared[int(text)]
+                    values[idx] = text
+                rows.append(values)
+        return rows
+
+
+def _xlsx_column_index(ref: str) -> int:
+    match = re.match(r"([A-Z]+)", ref)
+    if not match:
+        return 0
+    index = 0
+    for char in match.group(1):
+        index = index * 26 + ord(char) - 64
+    return index - 1
+
+
+def _kit_overlap_midpoint(value: str | None) -> float:
+    if value is None or str(value).strip() == "":
+        return 0.0
+    numbers = [float(item) for item in re.findall(r"\d+(?:\.\d+)?", str(value))]
+    if not numbers:
+        return 0.0
+    return float(sum(numbers) / len(numbers))
+
+
+def _kit_comment_to_label(comment: object) -> str:
+    text = str(comment or "").strip().lower()
+    if not text:
+        return "stable"
+    if "chatter" in text:
+        return "slight"
+    if text in {"roughing", "finishing"}:
+        return "stable"
+    return "unknown"
+
+
+def _kit_hfdata_member(trial: dict[str, object]) -> str:
+    component = str(trial["component"])
+    trial_id = str(trial["trial"])
+    return f"Data/Dataset/{component}/{trial_id}/processed_data/{trial_id}_hfdata.csv"
+
+
+def _ingest_kit_trial(
+    kit: _KITSource,
+    *,
+    trial: dict[str, object],
+    label: str,
+    episode: int,
+    starting_window_id: int,
+    config: KITIndustrialIngestConfig,
+    max_windows: int | None,
+) -> tuple[list[NDArray[np.float64]], list[WindowRecord], dict[str, object]]:
+    member = _kit_hfdata_member(trial)
+    windows: list[NDArray[np.float64]] = []
+    records: list[WindowRecord] = []
+    rows_read = 0
+    samples: list[tuple[float, float]] = []
+    with kit.open_text(member if kit._archive is not None else member.removeprefix("Data/")) as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError(f"{member} has no CSV header")
+        missing = [column for column in config.signal_columns if column not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"{member} is missing signal columns: {', '.join(missing)}")
+        for row in reader:
+            rows_read += 1
+            try:
+                samples.append(tuple(float(row[column]) for column in config.signal_columns))
+            except ValueError:
+                continue
+    signal = np.asarray(samples, dtype=float)
+    if signal.shape[0] < 4:
+        return [], [], _kit_trial_summary(trial, member, rows_read, 0, label, config)
+    slice_config = ICNCIngestConfig(
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        horizon_s=config.horizon_s,
+        flute_count=max(1, int(trial.get("flutes") or 1)),
+        modal_frequency_hz=None,
+        default_sample_rate_hz=config.sample_rate_hz,
+        default_spindle_rpm=float(trial.get("spindle_rpm") or 1.0),
+        default_feed_per_tooth_m=max(float(trial.get("feed_per_tooth_mm") or 0.0) / 1_000.0, 1.0e-9),
+    )
+    windows, records, _ = _slice_icnc_package(
+        sensor_signal=signal,
+        scenario=str(trial["trial"]),
+        episode=episode,
+        package_index=0,
+        starting_window_id=starting_window_id,
+        starting_window_index=0,
+        sample_rate_hz=config.sample_rate_hz,
+        spindle_rpm=max(float(trial.get("spindle_rpm") or 1.0), 1.0),
+        label=label,
+        previous=_TemporalState(),
+        config=slice_config,
+        max_windows=max_windows,
+        feed_per_tooth_m=max(float(trial.get("feed_per_tooth_mm") or 0.0) / 1_000.0, 1.0e-9),
+        axial_depth_m=float(trial.get("axial_depth_mm") or 0.0) / 1_000.0,
+        radial_depth_m=float(trial.get("radial_depth_mm") or 0.0) / 1_000.0,
+    )
+    records = attach_horizon_targets(records, HorizonConfig(horizon_s=config.horizon_s))
+    return windows, records, _kit_trial_summary(trial, member, rows_read, len(records), label, config)
+
+
+def _kit_trial_summary(
+    trial: dict[str, object],
+    member: str,
+    rows_read: int,
+    windows: int,
+    label: str,
+    config: KITIndustrialIngestConfig,
+) -> dict[str, object]:
+    return {
+        "trial": trial["trial"],
+        "component": trial["component"],
+        "comment": trial.get("comment", ""),
+        "label": label,
+        "member": member,
+        "rows_read": rows_read,
+        "windows": windows,
+        "signal_columns": list(config.signal_columns),
+        "sample_rate_hz": config.sample_rate_hz,
+    }
+
+
 @dataclass(frozen=True)
 class _CsvSource:
     path: str
@@ -371,6 +741,9 @@ def _slice_icnc_package(
     previous: _TemporalState,
     config: ICNCIngestConfig,
     max_windows: int | None,
+    feed_per_tooth_m: float | None = None,
+    axial_depth_m: float = 0.0,
+    radial_depth_m: float = 0.0,
 ) -> tuple[list[NDArray[np.float64]], list[WindowRecord], _TemporalState]:
     window_samples = int(round(config.window_s * sample_rate_hz))
     stride_samples = int(round(config.stride_s * sample_rate_hz))
@@ -443,9 +816,9 @@ def _slice_icnc_package(
             margin_signal=risk.margin_signal,
             uncertainty=max(risk.uncertainty, 0.80),
             spindle_rpm=spindle_rpm,
-            feed_per_tooth_m=config.default_feed_per_tooth_m,
-            axial_depth_m=0.0,
-            radial_depth_m=0.0,
+            feed_per_tooth_m=feed_per_tooth_m or config.default_feed_per_tooth_m,
+            axial_depth_m=axial_depth_m,
+            radial_depth_m=radial_depth_m,
             axial_depth_profile_scale=1.0,
             cutting_coeff_profile_scale=1.0,
             cutting_coeff_t_n_m2=1.0,
@@ -608,6 +981,39 @@ def _icnc_manifest(
     )
 
 
+def _kit_manifest(
+    records: list[WindowRecord],
+    source_summaries: list[dict[str, object]],
+    config: KITIndustrialIngestConfig,
+    sensor_windows: NDArray[np.float32],
+) -> DatasetManifest:
+    counts = Counter(record.label for record in records)
+    return DatasetManifest(
+        schema_version="chatter-window-v5",
+        sample_rate_hz=result_sample_rate(records, sensor_windows),
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        channel_names=tuple(config.signal_columns),
+        scenarios=tuple(str(summary["trial"]) for summary in source_summaries),
+        episodes_per_scenario=1,
+        total_windows=len(records),
+        label_counts=dict(sorted(counts.items())),
+        domain_randomization={
+            "enabled": False,
+            "source": "real_kit_industrial_radar",
+        },
+        sampling_strategy={
+            "dataset": "kit_industrial_radar_hvvwn1kfwf7qt48z",
+            "max_windows": config.max_windows,
+            "source_files": source_summaries,
+            "modality": "processed controller hfdata CSV",
+            "note": "The synchronized MATLAB acceleration/force files are not imported by this controller-only adapter.",
+        },
+        horizon={"horizon_s": config.horizon_s},
+        artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    )
+
+
 def _write_real_replay_dataset(
     out_dir: Path,
     records: list[WindowRecord],
@@ -709,6 +1115,50 @@ def _write_icnc_readme(path: Path, manifest: DatasetManifest, source_summaries: 
             "- `status` is treated as the label supplied by the dataset authors' AI chatter indicator.",
             "- The dataset does not include axial/radial depth, feed, tool, FRF, or cutting coefficients, so physics-margin fields are placeholders.",
             "- Use this for signal-estimator validation and domain-shift checks, not for claiming a calibrated process-dynamics twin.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_kit_readme(
+    path: Path,
+    manifest: DatasetManifest,
+    source_summaries: list[dict[str, object]],
+    config: KITIndustrialIngestConfig,
+) -> None:
+    lines = [
+        "# KIT Industrial Controller Replay Dataset",
+        "",
+        "Imported from RADAR/KIT record `hvvwn1kfwf7qt48z` into the local chatter replay schema.",
+        "",
+        f"Total windows: `{manifest.total_windows}`",
+        f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
+        f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
+        f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
+        f"Signal columns: `{config.signal_columns[0]}`, `{config.signal_columns[1]}`",
+        "",
+        "## Label Counts",
+        "",
+        "| Label | Count |",
+        "|---|---:|",
+    ]
+    for label, count in manifest.label_counts.items():
+        lines.append(f"| {label} | {count} |")
+    lines.extend(["", "## Trials", "", "| Trial | Component | Label | Comment | Rows | Windows |", "|---|---|---|---|---:|---:|"])
+    for source in source_summaries:
+        lines.append(
+            f"| `{source['trial']}` | {source['component']} | {source['label']} | "
+            f"{source['comment']} | {source['rows_read']} | {source['windows']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Caveats",
+            "",
+            "- This first KIT adapter uses processed SINUMERIK controller `hfdata.csv` signals only.",
+            "- DoE comments provide coarse trial-level labels; they are not onset timestamps.",
+            "- Use this for industrial controller-signal domain checks, then upgrade to synchronized MATLAB acceleration/force ingestion.",
             "",
         ]
     )
