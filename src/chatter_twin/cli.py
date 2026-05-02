@@ -56,6 +56,7 @@ from chatter_twin.offline import (
 )
 from chatter_twin.policy_selection import PolicySelectionConfig, select_rl_policy
 from chatter_twin.pseudo_label import DEFAULT_PSEUDO_SCORE_COLUMNS, PseudoLabelConfig, pseudo_label_replay_dataset
+from chatter_twin.realdata import parse_real_data_run_spec, write_real_data_benchmark, write_risk_error_analysis
 from chatter_twin.risk import estimate_chatter_risk
 from chatter_twin.replay import DomainRandomizationConfig, HorizonConfig, TransitionFocusConfig, WindowSpec, export_synthetic_dataset
 from chatter_twin.rl import (
@@ -373,6 +374,20 @@ def main(argv: list[str] | None = None) -> int:
     internal_demo.add_argument("--counterfactual-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.counterfactual_dir)
     internal_demo.add_argument("--test-status", default="")
 
+    real_data_benchmark = subparsers.add_parser("real-data-benchmark")
+    real_data_benchmark.add_argument("--out", type=Path, required=True)
+    real_data_benchmark.add_argument(
+        "--run",
+        action="append",
+        default=None,
+        help="Optional run spec: dataset=...,modality=...,path=...,claim=...,note=...",
+    )
+
+    error_analysis = subparsers.add_parser("risk-error-analysis")
+    error_analysis.add_argument("--model-dir", type=Path, required=True)
+    error_analysis.add_argument("--out", type=Path, required=True)
+    error_analysis.add_argument("--group-column", default="scenario")
+
     icnc_manifest = subparsers.add_parser("icnc-manifest")
     icnc_manifest.add_argument("--out", type=Path, required=True)
 
@@ -567,6 +582,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_gate_rl_shadow(args)
         case "internal-demo-report":
             return _cmd_internal_demo_report(args)
+        case "real-data-benchmark":
+            return _cmd_real_data_benchmark(args)
+        case "risk-error-analysis":
+            return _cmd_risk_error_analysis(args)
         case "icnc-manifest":
             return _cmd_icnc_manifest(args)
         case "kit-industrial-manifest":
@@ -1242,6 +1261,46 @@ def _cmd_internal_demo_report(args: argparse.Namespace) -> int:
                 "readiness": payload["readiness"]["status"],
                 "hardware_ready": payload["conclusion"]["hardware_ready"],
                 "gate_statuses": {row["profile"]: row["status"] for row in payload["promotion_gates"]},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_real_data_benchmark(args: argparse.Namespace) -> int:
+    runs = tuple(parse_real_data_run_spec(value) for value in args.run) if args.run else None
+    payload = write_real_data_benchmark(out_dir=args.out, runs=runs)
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "rows": len(payload["rows"]),
+                "skipped": len(payload["skipped"]),
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_risk_error_analysis(args: argparse.Namespace) -> int:
+    payload = write_risk_error_analysis(
+        model_dir=args.model_dir,
+        out_dir=args.out,
+        group_column=args.group_column,
+    )
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "windows": payload["windows"],
+                "groups": len(payload["group_metrics"]),
+                "worst_groups": payload["worst_groups"][:5],
+                "artifacts": payload["artifacts"],
             },
             indent=2,
             sort_keys=True,
