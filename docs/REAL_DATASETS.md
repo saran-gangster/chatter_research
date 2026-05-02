@@ -308,3 +308,36 @@ Caveat: this is still an exploratory pseudo-label experiment, not final
 machine validation. Window-level lead-time metrics are the most useful sanity
 check here. Event-level lead time is not a publishable result because the row
 split scatters one physical chatter episode across train and test windows.
+
+A stricter temporal holdout now exists:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --out results/kit_mat_force_accel_pseudo_onset_horizon_time_block \
+  --model hist_gb \
+  --feature-set temporal \
+  --target horizon \
+  --split-mode time_block \
+  --test-fraction 0.3 \
+  --seed 510
+```
+
+This trains on early windows and tests on later windows inside both `IM-01F`
+and `IM-02F-A01`. It is a more honest check for the single long KIT chatter
+trial:
+
+| Metric | Row split | Time-block split |
+|---|---:|---:|
+| Test accuracy | 0.986 | 0.933 |
+| Test chatter F1 | 0.959 | 0.043 |
+| Test intervention F1 | 0.887 | 0.444 |
+| Default lead-time F1 | 0.952 | 0.026 |
+| Selected-threshold lead-time F1 | 0.938 | 0.301 |
+| Event warning F1 | 1.000 | 0.000 |
+
+Interpretation: the row-split result is useful as a pipeline sanity check, but
+the time-block result is the current honest benchmark. The model reacts to some
+late chatter windows but does not warn before the first later chatter event.
+Increasing the pseudo-label horizon to `1.0 s` did not fix this; time-block
+lead-time and event-warning F1 both fell to `0.000`.

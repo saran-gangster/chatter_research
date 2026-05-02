@@ -3423,3 +3423,119 @@ the labels are exploratory pseudo labels, the split is a row split, and the
 event-level lead time is not publishable because one physical chatter episode
 is scattered across train/test windows. The useful result is the window-level
 early-warning sanity check on synchronized 10 kHz force+acceleration data.
+
+## 2026-05-02 - KIT Time-Block Holdout Check
+
+Added a `time_block` split mode for `train-risk`. It trains on early windows and
+tests on later windows inside each `scenario::episode`, which is stricter than
+random row splitting for long real-machine trials.
+
+Local validation after adding the splitter:
+
+```bash
+uv run --extra dev pytest -q
+```
+
+Result: `109 passed in 17.25s`.
+
+KIT time-block command:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_pseudo_onset_force_accel_standardized_full_exploratory \
+  --out results/kit_mat_force_accel_pseudo_onset_horizon_time_block \
+  --model hist_gb \
+  --feature-set temporal \
+  --target horizon \
+  --split-mode time_block \
+  --test-fraction 0.3 \
+  --seed 510
+```
+
+The split trained on early windows and tested on later windows:
+
+| Group | Train time | Test time | Train windows | Test windows |
+|---|---|---|---:|---:|
+| `IM-01F::episode=0` | 0.00-421.40 s | 421.45-602.05 s | 8,429 | 3,613 |
+| `IM-02F-A01::episode=1` | 0.00-215.60 s | 215.65-308.00 s | 4,313 | 1,848 |
+
+Time-block metrics:
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 0.933 |
+| Test chatter F1 | 0.043 |
+| Test intervention F1 | 0.444 |
+| Default lead-time F1 | 0.026 |
+| Default lead-time recall | 0.014 |
+| Selected-threshold lead-time F1 | 0.301 |
+| Selected-threshold lead-time recall | 0.194 |
+| Event warning F1 | 0.000 |
+| Event warning recall | 0.000 |
+
+Shadow evaluation with the train-selected lead threshold:
+
+```bash
+uv run chatter-twin shadow-eval \
+  --model-dir results/kit_mat_force_accel_pseudo_onset_horizon_time_block \
+  --out results/kit_mat_force_accel_pseudo_onset_shadow_time_block_selected \
+  --threshold-source lead \
+  --warning-feed 0.92 \
+  --warning-spindle 1.04
+```
+
+| Metric | Value |
+|---|---:|
+| Warning threshold | 0.05 |
+| Warning fraction | 0.00531 |
+| Action fraction | 0.00678 |
+| Event F1 | 0.000 |
+| Event recall | 0.000 |
+| False warning episodes | 0 |
+| Relative MRR proxy | 0.99980 |
+
+Timeline diagnostic on the late `IM-02F-A01` block:
+
+| Event | Time | Model score |
+|---|---:|---:|
+| First lead candidate before late chatter | 217.75 s | 0.00016 |
+| First current positive chatter window | 218.25 s | 0.26074 |
+| First warning at threshold 0.05 | 218.25 s | 0.26074 |
+| First warning at threshold 0.50 | 225.10 s | 0.79975 |
+
+So the time-block model reacts at or after the first late chatter window; it
+does not lead that event. A second pseudo-label run with `--horizon 1.0` was
+also tested:
+
+```bash
+uv run chatter-twin pseudo-label-replay \
+  --dataset results/kit_mat_replay_force_accel_standardized_full \
+  --out results/kit_mat_pseudo_onset_force_accel_standardized_full_h1_exploratory \
+  --positive-scenarios IM-02F-A01 \
+  --horizon 1.0 \
+  --transition-floor 0.35 \
+  --slight-floor 0.6 \
+  --severe-floor 1.0
+
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_pseudo_onset_force_accel_standardized_full_h1_exploratory \
+  --out results/kit_mat_force_accel_pseudo_onset_h1_time_block \
+  --model hist_gb \
+  --feature-set temporal \
+  --target horizon \
+  --split-mode time_block \
+  --test-fraction 0.3 \
+  --seed 511
+```
+
+The `1.0 s` horizon did not help: test chatter F1 was `0.000`, lead-time F1 was
+`0.000`, and event-warning F1 was `0.000`.
+
+Lesson: the current public KIT bridge is excellent for exercising the
+high-rate ingestion, pseudo-label, risk-model, and shadow-recommendation
+pipeline. It is not yet strong evidence that the estimator generalizes forward
+in time on real data. The next non-GPU research step is to add richer
+time-local labeling/segmentation across more KIT trials or another public
+dataset with multiple independent chatter onsets; the next hardware step is to
+collect our own synchronized sensor stream with known entry, cut, and surface
+validation.
