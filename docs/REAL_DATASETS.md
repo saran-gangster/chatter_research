@@ -500,6 +500,7 @@ Current benchmark summary:
 | KIT force+accel row split | row | horizon | 0.986 | 0.959 | 0.952 | pipeline sanity only |
 | KIT force+accel time block | time_block | horizon | 0.933 | 0.043 | 0.026 | stress test, no early-warning claim |
 | Purdue sensor 0 audio | scenario | current | 0.651 | 0.731 | 0.000 | best current-window public audio baseline so far |
+| Purdue sensor 1 audio | episode | current | 0.692 | 0.777 | 0.000 | easier held-out cutting-path check |
 | Purdue sensor 1 audio | scenario | current | 0.566 | 0.637 | 0.000 | unseen-experiment validation |
 | Purdue sensor 2 audio | scenario | current | 0.375 | 0.456 | 0.000 | diagnostic only |
 | Purdue 0+1+2 norm audio | scenario | current | 0.680 | 0.550 | 0.000 | diagnostic only |
