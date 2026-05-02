@@ -142,12 +142,14 @@ to add physics-shaped derived features such as depth-to-critical ratio and
 process force proxy. Use `--target horizon` with schema v4+ exports for
 early-warning labels. See
 `docs/OFFLINE_RISK_TRAINING.md`.
-Use `--split-mode episode` or `--split-mode parameter_family` for more honest
-generalization checks on synthetic replay data. Reports also include lead-time
-metrics that score only current stable/transition windows with future chatter
-inside the configured horizon. Add `--validation-fraction` to select the
-lead-time warning threshold on a held-out validation subset instead of the fit
-or test split. Reports also include event-level warning metrics that score each
+Use `--split-mode episode`, `--split-mode time_block`, or
+`--split-mode parameter_family` for more honest checks than random rows.
+`time_block` is useful for long real-machine trials because it trains on early
+windows and tests on later windows within each episode. Reports also include
+lead-time metrics that score only current stable/transition windows with future
+chatter inside the configured horizon. Add `--validation-fraction` to select
+the lead-time warning threshold on a held-out validation subset instead of the
+fit or test split. Reports also include event-level warning metrics that score each
 cut episode once: did the model warn before the first current chatter window?
 
 ## Shadow-Mode Recommendations

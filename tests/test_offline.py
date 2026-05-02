@@ -194,6 +194,23 @@ def test_episode_split_keeps_groups_disjoint(tmp_path: Path):
     assert train_groups.isdisjoint(test_groups)
 
 
+def test_time_block_split_holds_out_late_windows_per_episode(tmp_path: Path):
+    dataset = _make_dataset(tmp_path / "dataset")
+    records = load_window_records(dataset / "windows.csv")
+    _, y = make_feature_matrix(records, ("margin_physics",))
+    split = make_train_test_split(records, y, RiskTrainingConfig(split_mode="time_block", test_fraction=0.4))
+    groups = episode_group_keys(records)
+
+    assert split.metadata["mode"] == "time_block"
+    assert split.metadata["block_policy"] == "train_early_test_late_within_each_episode"
+    for group in sorted(set(groups.tolist())):
+        train_times = [float(records[index]["start_time_s"]) for index in split.train_idx if groups[index] == group]
+        test_times = [float(records[index]["start_time_s"]) for index in split.test_idx if groups[index] == group]
+        assert train_times
+        assert test_times
+        assert max(train_times) < min(test_times)
+
+
 def test_parameter_family_split_holds_out_extreme_scale(tmp_path: Path):
     dataset = _make_randomized_dataset(tmp_path / "dataset")
     records = load_window_records(dataset / "windows.csv")
@@ -220,6 +237,24 @@ def test_validation_split_is_disjoint_from_fit_subset(tmp_path: Path):
         split.train_idx,
         y,
         RiskTrainingConfig(split_mode="episode", test_fraction=0.25, validation_fraction=0.25, seed=3),
+    )
+
+    assert validation.metadata["enabled"] is True
+    assert validation.fit_idx.size > 0
+    assert validation.validation_idx.size > 0
+    assert set(validation.fit_idx.tolist()).isdisjoint(set(validation.validation_idx.tolist()))
+
+
+def test_time_block_validation_split_is_disjoint_from_fit_subset(tmp_path: Path):
+    dataset = _make_dataset(tmp_path / "dataset")
+    records = load_window_records(dataset / "windows.csv")
+    _, y = make_feature_matrix(records, ("margin_physics",))
+    split = make_train_test_split(records, y, RiskTrainingConfig(split_mode="time_block", test_fraction=0.25))
+    validation = make_validation_split(
+        records,
+        split.train_idx,
+        y,
+        RiskTrainingConfig(split_mode="time_block", test_fraction=0.25, validation_fraction=0.25),
     )
 
     assert validation.metadata["enabled"] is True
@@ -329,6 +364,28 @@ def test_cli_train_risk_runs(tmp_path: Path):
     assert status == 0
     metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["split"]["mode"] == "episode"
+
+
+def test_cli_train_risk_runs_time_block_split(tmp_path: Path):
+    dataset = _make_dataset(tmp_path / "dataset")
+    out_dir = tmp_path / "model"
+    status = main(
+        [
+            "train-risk",
+            "--dataset",
+            str(dataset),
+            "--out",
+            str(out_dir),
+            "--epochs",
+            "80",
+            "--split-mode",
+            "time_block",
+        ]
+    )
+    assert status == 0
+    metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["split"]["mode"] == "time_block"
+    assert metrics["split"]["block_policy"] == "train_early_test_late_within_each_episode"
 
 
 def test_cli_train_risk_runs_hist_gradient_boosting(tmp_path: Path):

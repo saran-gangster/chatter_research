@@ -13,7 +13,7 @@ from chatter_twin.replay import ID_TO_LABEL, LABEL_TO_ID
 
 MODEL_TYPES = ("softmax", "hist_gb")
 CALIBRATION_METHODS = ("none", "sigmoid", "isotonic")
-SPLIT_MODES = ("row", "episode", "parameter_family")
+SPLIT_MODES = ("row", "episode", "parameter_family", "time_block")
 HOLDOUT_TAILS = ("high", "low")
 FEATURE_SETS = ("base", "temporal", "profile", "profile_temporal", "interaction", "interaction_temporal")
 TARGETS = ("current", "horizon")
@@ -487,6 +487,8 @@ def make_train_test_split(records: list[dict[str, str]], y: NDArray[np.int64], c
             mode="episode",
             strata=strata,
         )
+    if config.split_mode == "time_block":
+        return time_block_split(records=records, groups=groups, test_fraction=config.test_fraction, mode="time_block")
 
     return parameter_family_split(
         records=records,
@@ -523,6 +525,22 @@ def make_validation_split(
             "mode": "row",
             "validation_fraction": config.validation_fraction,
             "seed": config.seed + 911,
+        }
+    elif config.split_mode == "time_block":
+        train_records = [records[int(index)] for index in train_idx]
+        local_groups = episode_group_keys(train_records)
+        local_split = time_block_split(
+            records=train_records,
+            groups=local_groups,
+            test_fraction=config.validation_fraction,
+            mode="validation_time_block",
+        )
+        local_fit, local_validation = local_split.train_idx, local_split.test_idx
+        metadata = {
+            "enabled": True,
+            "mode": "time_block",
+            "validation_fraction": config.validation_fraction,
+            **local_split.metadata,
         }
     else:
         train_records = [records[int(index)] for index in train_idx]
@@ -619,6 +637,83 @@ def grouped_train_test_split(
             "test_groups": test_groups,
         },
     )
+
+
+def time_block_split(
+    *,
+    records: list[dict[str, str]],
+    groups: NDArray[np.str_],
+    test_fraction: float,
+    mode: str,
+) -> SplitResult:
+    train: list[int] = []
+    test: list[int] = []
+    group_ranges: list[dict[str, object]] = []
+
+    for group in sorted(set(groups.tolist())):
+        group_idx = np.flatnonzero(groups == group).astype(np.int64)
+        ordered = sorted(group_idx.tolist(), key=lambda idx: (_record_start_time(records[idx]), _record_window_index(records[idx])))
+        if len(ordered) <= 1 or test_fraction == 0:
+            train.extend(ordered)
+            split_at = len(ordered)
+        else:
+            n_test = max(1, int(round(len(ordered) * test_fraction)))
+            n_test = min(n_test, len(ordered) - 1)
+            split_at = len(ordered) - n_test
+            train.extend(ordered[:split_at])
+            test.extend(ordered[split_at:])
+
+        group_ranges.append(
+            {
+                "group": group,
+                "windows": len(ordered),
+                "train_windows": split_at,
+                "test_windows": len(ordered) - split_at,
+                "train_start_s": _index_time_or_none(records, ordered[0]) if split_at else None,
+                "train_end_s": _index_time_or_none(records, ordered[split_at - 1]) if split_at else None,
+                "test_start_s": _index_time_or_none(records, ordered[split_at]) if split_at < len(ordered) else None,
+                "test_end_s": _index_time_or_none(records, ordered[-1]) if split_at < len(ordered) else None,
+            }
+        )
+
+    if not test:
+        test = train.copy()
+
+    train_idx = np.array(sorted(train), dtype=np.int64)
+    test_idx = np.array(sorted(test), dtype=np.int64)
+    return SplitResult(
+        train_idx=train_idx,
+        test_idx=test_idx,
+        metadata={
+            "mode": mode,
+            "test_fraction": test_fraction,
+            "train_group_count": len(set(groups[train_idx].tolist())) if train_idx.size else 0,
+            "test_group_count": len(set(groups[test_idx].tolist())) if test_idx.size else 0,
+            "test_groups": sorted(set(groups[test_idx].tolist())) if test_idx.size else [],
+            "block_policy": "train_early_test_late_within_each_episode",
+            "group_time_ranges": group_ranges,
+        },
+    )
+
+
+def _record_start_time(record: dict[str, str]) -> float:
+    try:
+        return float(record.get("start_time_s", "0"))
+    except ValueError:
+        return 0.0
+
+
+def _record_window_index(record: dict[str, str]) -> int:
+    try:
+        return int(float(record.get("window_index_in_episode", "0")))
+    except ValueError:
+        return 0
+
+
+def _index_time_or_none(records: list[dict[str, str]], index: int) -> float | None:
+    if not records:
+        return None
+    return _record_start_time(records[index])
 
 
 def parameter_family_split(
@@ -1411,7 +1506,7 @@ def write_report(path: Path, payload: dict) -> None:
         [
             "",
             "The model is trained on replay-window metadata/features, not raw waveform CNN/GRU inputs.",
-            "Use episode or parameter-family splits when reporting generalization.",
+            "Use episode, time-block, or parameter-family splits when reporting generalization.",
             "",
         ]
     )
