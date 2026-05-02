@@ -51,6 +51,7 @@ from chatter_twin.offline import (
     train_risk_model,
 )
 from chatter_twin.policy_selection import PolicySelectionConfig, select_rl_policy
+from chatter_twin.pseudo_label import DEFAULT_PSEUDO_SCORE_COLUMNS, PseudoLabelConfig, pseudo_label_replay_dataset
 from chatter_twin.risk import estimate_chatter_risk
 from chatter_twin.replay import DomainRandomizationConfig, HorizonConfig, TransitionFocusConfig, WindowSpec, export_synthetic_dataset
 from chatter_twin.rl import (
@@ -237,6 +238,19 @@ def main(argv: list[str] | None = None) -> int:
     train_risk.add_argument("--split-mode", choices=SPLIT_MODES, default="row")
     train_risk.add_argument("--holdout-column", default="axial_depth_scale")
     train_risk.add_argument("--holdout-tail", choices=HOLDOUT_TAILS, default="high")
+
+    pseudo_label = subparsers.add_parser("pseudo-label-replay")
+    pseudo_label.add_argument("--dataset", type=Path, required=True)
+    pseudo_label.add_argument("--out", type=Path, required=True)
+    pseudo_label.add_argument("--score-columns", default=",".join(DEFAULT_PSEUDO_SCORE_COLUMNS))
+    pseudo_label.add_argument("--positive-scenarios", default="")
+    pseudo_label.add_argument("--horizon", type=float, default=None)
+    pseudo_label.add_argument("--transition-quantile", type=float, default=0.95)
+    pseudo_label.add_argument("--slight-quantile", type=float, default=0.99)
+    pseudo_label.add_argument("--severe-quantile", type=float, default=0.997)
+    pseudo_label.add_argument("--transition-floor", type=float, default=1.0)
+    pseudo_label.add_argument("--slight-floor", type=float, default=2.0)
+    pseudo_label.add_argument("--severe-floor", type=float, default=3.5)
 
     train_rl = subparsers.add_parser("train-rl")
     train_rl.add_argument("--algorithm", choices=["q_learning", "sac", "td3"], default="sac")
@@ -513,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_export_synthetic(args)
         case "train-risk":
             return _cmd_train_risk(args)
+        case "pseudo-label-replay":
+            return _cmd_pseudo_label_replay(args)
         case "train-rl":
             return _cmd_train_rl(args)
         case "train-rl-multiseed":
@@ -884,6 +900,42 @@ def _cmd_train_risk(args: argparse.Namespace) -> int:
                 "event_threshold_selection_source": payload["event_warning"]["threshold_selection"]["source"],
                 "split": payload["split"],
                 "validation_split": payload["validation_split"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_pseudo_label_replay(args: argparse.Namespace) -> int:
+    payload = pseudo_label_replay_dataset(
+        dataset_dir=args.dataset,
+        out_dir=args.out,
+        config=PseudoLabelConfig(
+            score_columns=tuple(column.strip() for column in args.score_columns.split(",") if column.strip()),
+            positive_scenarios=tuple(scenario.strip() for scenario in args.positive_scenarios.split(",") if scenario.strip()),
+            horizon_s=args.horizon,
+            transition_quantile=args.transition_quantile,
+            slight_quantile=args.slight_quantile,
+            severe_quantile=args.severe_quantile,
+            transition_floor=args.transition_floor,
+            slight_floor=args.slight_floor,
+            severe_floor=args.severe_floor,
+        ),
+    )
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "source_dataset": payload["source_dataset"],
+                "total_windows": payload["total_windows"],
+                "changed_windows": payload["changed_windows"],
+                "label_counts_before": payload["label_counts_before"],
+                "label_counts_after": payload["label_counts_after"],
+                "positive_scenarios": payload["positive_scenarios"],
+                "thresholds": payload["thresholds"],
                 "artifacts": payload["artifacts"],
             },
             indent=2,
