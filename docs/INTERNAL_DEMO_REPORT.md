@@ -1,6 +1,6 @@
 # Chatter Twin Internal Demo Report
 
-Generated: `2026-05-02T17:39:12+00:00`
+Generated: `2026-05-02T17:43:02+00:00`
 
 ## Executive Conclusion
 
@@ -11,7 +11,7 @@ Software demo complete; real CNC validation is still the decisive missing result
 | Current stage | `offline_shadow_review` |
 | RL champion | `td3 seed 616` |
 | Hardware ready | `false` |
-| Test status | `112 passed in 55.66s` |
+| Test status | `114 passed in 18.16s` |
 
 ## What This Demo Proves
 
@@ -111,7 +111,7 @@ RL stress candidates:
 1. Re-run tests: `rtk uv run pytest -q`.
 2. Regenerate the RL shadow replay: `rtk uv run --extra rl chatter-twin shadow-rl-policy ...` using the command in `docs/RL_CONTROLLERS.md`.
 3. Re-run gates: `rtk uv run chatter-twin gate-rl-shadow --profile shadow_review ...`, then repeat for `live_shadow` and `hardware_actuation`.
-4. Regenerate this report: `rtk uv run chatter-twin internal-demo-report --out docs/INTERNAL_DEMO_REPORT.md --summary-out docs/INTERNAL_DEMO_SUMMARY.json --test-status "112 passed in 55.66s"`.
+4. Regenerate this report: `rtk uv run chatter-twin internal-demo-report --out docs/INTERNAL_DEMO_REPORT.md --summary-out docs/INTERNAL_DEMO_SUMMARY.json --test-status "114 passed in 18.16s"`.
 
 ## Artifact Map
 

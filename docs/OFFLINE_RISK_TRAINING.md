@@ -78,6 +78,7 @@ Available split modes:
 |---|---|
 | `row` | Stratified random row split. Fast smoke test, but optimistic for overlapping replay windows. |
 | `episode` | Holds out complete scenario/episode cuts so adjacent windows do not leak across train/test. |
+| `scenario` | Holds out complete scenario or experiment names. Useful for checking whether a signal model generalizes to unseen experiments. |
 | `time_block` | Trains on early windows and tests on later windows inside each episode. Useful for single long real-machine trials where complete episode holdout would leave too few chatter examples. |
 | `parameter_family` | Holds out complete episodes from the high or low tail of a selected context/randomization column. |
 

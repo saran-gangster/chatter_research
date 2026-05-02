@@ -13,7 +13,7 @@ from chatter_twin.replay import ID_TO_LABEL, LABEL_TO_ID
 
 MODEL_TYPES = ("softmax", "hist_gb")
 CALIBRATION_METHODS = ("none", "sigmoid", "isotonic")
-SPLIT_MODES = ("row", "episode", "parameter_family", "time_block")
+SPLIT_MODES = ("row", "episode", "scenario", "parameter_family", "time_block")
 HOLDOUT_TAILS = ("high", "low")
 FEATURE_SETS = ("base", "temporal", "profile", "profile_temporal", "interaction", "interaction_temporal")
 TARGETS = ("current", "horizon")
@@ -487,6 +487,13 @@ def make_train_test_split(records: list[dict[str, str]], y: NDArray[np.int64], c
             mode="episode",
             strata=strata,
         )
+    if config.split_mode == "scenario":
+        return grouped_train_test_split(
+            groups=scenario_group_keys(records),
+            test_fraction=config.test_fraction,
+            seed=config.seed,
+            mode="scenario",
+        )
     if config.split_mode == "time_block":
         return time_block_split(records=records, groups=groups, test_fraction=config.test_fraction, mode="time_block")
 
@@ -544,8 +551,8 @@ def make_validation_split(
         }
     else:
         train_records = [records[int(index)] for index in train_idx]
-        local_groups = episode_group_keys(train_records)
-        local_strata = np.array([record.get("scenario", "") for record in train_records])
+        local_groups = scenario_group_keys(train_records) if config.split_mode == "scenario" else episode_group_keys(train_records)
+        local_strata = None if config.split_mode == "scenario" else np.array([record.get("scenario", "") for record in train_records])
         local_split = grouped_train_test_split(
             groups=local_groups,
             test_fraction=config.validation_fraction,
@@ -591,6 +598,10 @@ def make_validation_split(
 
 def episode_group_keys(records: list[dict[str, str]]) -> NDArray[np.str_]:
     return np.array([f"{record.get('scenario', '')}::episode={record.get('episode', '')}" for record in records])
+
+
+def scenario_group_keys(records: list[dict[str, str]]) -> NDArray[np.str_]:
+    return np.array([str(record.get("scenario", "")) for record in records])
 
 
 def grouped_train_test_split(

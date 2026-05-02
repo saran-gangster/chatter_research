@@ -18,6 +18,7 @@ from chatter_twin.offline import (
     make_feature_matrix,
     make_train_test_split,
     make_validation_split,
+    scenario_group_keys,
     train_risk_model,
     train_test_indices,
 )
@@ -189,6 +190,21 @@ def test_episode_split_keeps_groups_disjoint(tmp_path: Path):
     test_groups = set(groups[split.test_idx].tolist())
 
     assert split.metadata["mode"] == "episode"
+    assert train_groups
+    assert test_groups
+    assert train_groups.isdisjoint(test_groups)
+
+
+def test_scenario_split_keeps_scenarios_disjoint(tmp_path: Path):
+    dataset = _make_dataset(tmp_path / "dataset")
+    records = load_window_records(dataset / "windows.csv")
+    _, y = make_feature_matrix(records, ("margin_physics",))
+    split = make_train_test_split(records, y, RiskTrainingConfig(split_mode="scenario", test_fraction=0.34, seed=9))
+    groups = scenario_group_keys(records)
+    train_groups = set(groups[split.train_idx].tolist())
+    test_groups = set(groups[split.test_idx].tolist())
+
+    assert split.metadata["mode"] == "scenario"
     assert train_groups
     assert test_groups
     assert train_groups.isdisjoint(test_groups)
@@ -386,6 +402,27 @@ def test_cli_train_risk_runs_time_block_split(tmp_path: Path):
     metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["split"]["mode"] == "time_block"
     assert metrics["split"]["block_policy"] == "train_early_test_late_within_each_episode"
+
+
+def test_cli_train_risk_runs_scenario_split(tmp_path: Path):
+    dataset = _make_dataset(tmp_path / "dataset")
+    out_dir = tmp_path / "model"
+    status = main(
+        [
+            "train-risk",
+            "--dataset",
+            str(dataset),
+            "--out",
+            str(out_dir),
+            "--epochs",
+            "80",
+            "--split-mode",
+            "scenario",
+        ]
+    )
+    assert status == 0
+    metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["split"]["mode"] == "scenario"
 
 
 def test_cli_train_risk_runs_hist_gradient_boosting(tmp_path: Path):
