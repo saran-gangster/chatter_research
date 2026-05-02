@@ -172,3 +172,35 @@ Current caveat: this is a controller-only bridge using `LOAD|6` and
 `CURRENT|6`. It is useful for industrial-domain smoke tests, but the serious
 next adapter should target the synchronized MATLAB acceleration/force files and
 derive time-local chatter/onset labels inside the chatter trial.
+
+The synchronized MATLAB v7.3 path now has an optional HDF5 reader:
+
+```bash
+uv run --extra mat chatter-twin inspect-kit-mat \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --trial IM-02F-A01 \
+  --out data/raw/kit_industrial/kit_mat_inspection_IM-02F-A01.json
+```
+
+The decoded timetable exposes `97` variables at `10 kHz`, including
+`xForce`, `yForce`, `zForce`, `xAcceleration`, `yAcceleration`, and
+`zAcceleration`.
+
+Import a bounded acceleration replay:
+
+```bash
+uv run --extra mat chatter-twin ingest-kit-mat \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_mat_replay_im01f_vs_chatter_200k \
+  --trials IM-01F,IM-02F-A01 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --signal-names xAcceleration,yAcceleration \
+  --max-samples-per-trial 200000
+```
+
+This produced `798` high-rate acceleration windows on the first bounded run,
+balanced between stable `IM-01F` and chatter-labeled `IM-02F-A01`. Treat that
+as a high-rate ingestion validation result only; the labels are still trial
+level. The next useful layer is pseudo-onset labeling inside `IM-02F-A01`.

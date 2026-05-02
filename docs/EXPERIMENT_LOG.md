@@ -3209,3 +3209,91 @@ row-split score is a smoke-test result, not a publishable generalization claim;
 it likely reflects trial/process-regime separation. The next serious upgrade is
 to ingest the synchronized MATLAB acceleration/force signals and create
 time-local labels or pseudo-labels inside `IM-02F-A01`.
+
+## 2026-05-02 - KIT Synchronized MAT Acceleration Replay
+
+Added a MATLAB v7.3/HDF5 inspector and importer for the KIT synchronized
+MATLAB timetables.
+
+Implementation:
+
+- Added optional dependency extra: `mat` -> `h5py`.
+- Added `inspect-kit-mat` to list HDF5 datasets and candidate time-series
+  arrays.
+- Added `ingest-kit-mat` to decode the MATLAB timetable under `#refs#/j`.
+- The decoder reads:
+  - `varNames`
+  - `varUnits`
+  - `varDescriptions`
+  - `data`
+  - `rowTimes/sampleRate`
+
+Real file structure found in `IM-02F-A01_synchronized.mat`:
+
+| Field | Value |
+|---|---:|
+| Root object | `messdaten_sync` |
+| MATLAB type | `timetable` |
+| Variables | 97 |
+| Rows | 3,081,459 |
+| Sample rate | 10,000 Hz |
+
+Useful high-rate signals:
+
+| Index | Signal | Unit | Description |
+|---:|---|---|---|
+| 0 | `xForce` | N | Stationary dynamometer + X |
+| 1 | `yForce` | N | Stationary dynamometer - Y |
+| 2 | `zForce` | N | Stationary dynamometer + Z |
+| 3 | `zAcceleration` | g | Accelerometer - Z-axis |
+| 4 | `yAcceleration` | g | Accelerometer + Y-axis |
+| 5 | `xAcceleration` | g | Accelerometer + X-axis |
+
+Bounded acceleration replay import:
+
+```bash
+uv run --extra mat chatter-twin ingest-kit-mat \
+  --source data/raw/kit_industrial/extracted/10.35097-hvvwn1kfwf7qt48z/data/dataset/Data.zip \
+  --out results/kit_mat_replay_im01f_vs_chatter_200k \
+  --trials IM-01F,IM-02F-A01 \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25 \
+  --signal-names xAcceleration,yAcceleration \
+  --max-samples-per-trial 200000
+```
+
+| Trial | Label | Sample rate | Samples | Windows |
+|---|---|---:|---:|---:|
+| `IM-01F` | stable | 10,000 Hz | 200,000 | 399 |
+| `IM-02F-A01` | slight | 10,000 Hz | 200,000 | 399 |
+
+First high-rate acceleration sanity baseline:
+
+```bash
+uv run chatter-twin train-risk \
+  --dataset results/kit_mat_replay_im01f_vs_chatter_200k \
+  --out results/kit_mat_risk_row_baseline_im01f_vs_chatter_200k \
+  --model hist_gb \
+  --feature-set temporal \
+  --target current \
+  --split-mode row \
+  --test-fraction 0.3 \
+  --seed 507
+```
+
+| Metric | Value |
+|---|---:|
+| Test accuracy | 1.000 |
+| Test chatter F1 | 1.000 |
+| Test intervention F1 | 1.000 |
+| Test event-warning F1 | 0.000 |
+| Test lead-time F1 | 0.000 |
+
+Lesson: the high-rate synchronized MAT path is now working and gives us the
+right sensor modality for chatter work. The current result is still only a
+trial-label sanity check, because `IM-02F-A01` is labeled as a whole chatter
+trial. The next research step is to generate time-local pseudo-labels inside
+the chatter trial using non-tooth-harmonic energy, chatter-band growth, and
+force/acceleration agreement, then rerun early-warning metrics on those
+pseudo-onset labels.
