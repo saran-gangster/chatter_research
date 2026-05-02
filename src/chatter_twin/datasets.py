@@ -10,9 +10,9 @@ import urllib.request
 import zipfile
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 from xml.etree import ElementTree as ET
 
 import numpy as np
@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from scipy.io import wavfile
 
 from chatter_twin.features import extract_signal_features
+from chatter_twin.models import CutConfig, ModalParams, SimulationResult, ToolConfig
 from chatter_twin.replay import (
     CHATTER_POSITIVE_LABELS,
     CHANNEL_NAMES,
@@ -30,6 +31,7 @@ from chatter_twin.replay import (
     WindowSpec,
     attach_horizon_targets,
     result_sample_rate,
+    slice_result_windows,
 )
 from chatter_twin.risk import estimate_chatter_risk
 
@@ -199,6 +201,41 @@ class BoschCNCIngestConfig:
             raise ValueError("max_windows must be at least 1")
 
 
+@dataclass(frozen=True)
+class MachineRunIngestConfig:
+    """Local user-machine log contract for CNC context plus high-rate sensors."""
+
+    sensor_csv: str = "sensors.csv"
+    cnc_csv: str = "cnc_context.csv"
+    metadata_json: str = "run_metadata.json"
+    labels_csv: str = "labels.csv"
+    sensor_time_column: str = "time_s"
+    cnc_time_column: str = "time_s"
+    sensor_columns: tuple[str, ...] = ("accel_x", "accel_y", "accel_z")
+    spindle_column: str = "spindle_rpm"
+    feed_per_tooth_column: str = "feed_per_tooth_m"
+    feed_mm_min_column: str = "feed_mm_min"
+    window_s: float = 0.10
+    stride_s: float = 0.05
+    horizon_s: float = 0.25
+    default_label: str = "unknown"
+    max_windows: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0:
+            raise ValueError("window_s must be positive")
+        if self.stride_s <= 0:
+            raise ValueError("stride_s must be positive")
+        if self.horizon_s <= 0:
+            raise ValueError("horizon_s must be positive")
+        if not self.sensor_columns:
+            raise ValueError("sensor_columns cannot be empty")
+        if self.default_label not in LABEL_TO_ID:
+            raise ValueError(f"default_label must be one of {', '.join(LABEL_TO_ID)}")
+        if self.max_windows is not None and self.max_windows < 1:
+            raise ValueError("max_windows must be at least 1")
+
+
 def icnc_source_manifest() -> dict[str, object]:
     return {
         "dataset": "i-CNC Use Case: Vibration data and associated Chatter indication during milling process with CNC machines",
@@ -286,6 +323,303 @@ def write_mt_cutting_source_manifest(path: Path) -> dict[str, object]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def write_machine_run_template(out_dir: Path, *, overwrite: bool = False) -> dict[str, object]:
+    """Write a minimal real-machine capture template.
+
+    The template is intentionally plain CSV/JSON so it can be filled by MTConnect,
+    controller API, LabJack/NI DAQ, PicoScope, or quick Python logging scripts.
+    """
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files = {
+        "metadata": out_dir / "run_metadata.json",
+        "sensors": out_dir / "sensors.csv",
+        "cnc_context": out_dir / "cnc_context.csv",
+        "labels": out_dir / "labels.csv",
+        "readme": out_dir / "README.md",
+    }
+    existing = [str(path) for path in files.values() if path.exists()]
+    if existing and not overwrite:
+        raise ValueError(f"Template files already exist; use overwrite to replace: {', '.join(existing)}")
+
+    metadata = {
+        "schema": "chatter-machine-run-v1",
+        "run_id": "machine_run_001",
+        "machine": {"id": "cnc_001", "controller": "unknown", "mtconnect_agent": ""},
+        "tool": {"id": "tool_001", "diameter_m": 0.010, "flute_count": 4, "overhang_m": 0.040},
+        "process": {
+            "material": "aluminum_6061",
+            "operation": "side_milling",
+            "axial_depth_m": 0.0006,
+            "radial_depth_m": 0.004,
+            "cutting_coeff_t_n_m2": 7.0e8,
+            "cutting_coeff_r_n_m2": 2.1e8,
+        },
+        "modal": {
+            "mass_x_kg": 0.8,
+            "mass_y_kg": 0.8,
+            "stiffness_x_n_m": 1.55e7,
+            "stiffness_y_n_m": 1.25e7,
+            "damping_x_n_s_m": 210.0,
+            "damping_y_n_s_m": 190.0,
+        },
+        "sensors": {
+            "sample_rate_hz": 10_000.0,
+            "channels": ["accel_x", "accel_y", "accel_z"],
+            "placement": "spindle housing near nose",
+        },
+        "time_sync": {
+            "time_s_zero": "shared DAQ/controller event marker or run start",
+            "note": "Use the same time_s origin in sensors.csv, cnc_context.csv, and labels.csv.",
+        },
+    }
+    files["metadata"].write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dict_rows(
+        files["sensors"],
+        [
+            {"time_s": 0.0000, "accel_x": 0.000, "accel_y": 0.000, "accel_z": 0.000},
+            {"time_s": 0.0001, "accel_x": 0.012, "accel_y": -0.004, "accel_z": 0.002},
+            {"time_s": 0.0002, "accel_x": 0.019, "accel_y": -0.006, "accel_z": 0.003},
+        ],
+    )
+    _write_dict_rows(
+        files["cnc_context"],
+        [
+            {
+                "time_s": 0.0,
+                "spindle_rpm": 9000.0,
+                "feed_per_tooth_m": 45.0e-6,
+                "feed_override": 1.0,
+                "spindle_override": 1.0,
+                "program_line": "N100",
+            },
+            {
+                "time_s": 0.1,
+                "spindle_rpm": 9000.0,
+                "feed_per_tooth_m": 45.0e-6,
+                "feed_override": 1.0,
+                "spindle_override": 1.0,
+                "program_line": "N100",
+            },
+        ],
+    )
+    _write_dict_rows(
+        files["labels"],
+        [
+            {"start_time_s": 0.0, "end_time_s": 1.5, "label": "stable", "source": "operator/surface/spectrum"},
+            {"start_time_s": 1.5, "end_time_s": 1.9, "label": "transition", "source": "spectrum"},
+            {"start_time_s": 1.9, "end_time_s": 2.4, "label": "slight", "source": "surface+audio"},
+        ],
+    )
+    files["readme"].write_text(_machine_run_template_readme(), encoding="utf-8")
+    return {"out": str(out_dir), "files": {key: str(path) for key, path in files.items()}}
+
+
+def inspect_machine_run(source: Path, config: MachineRunIngestConfig | None = None) -> dict[str, object]:
+    config = config or MachineRunIngestConfig()
+    sensor_path, cnc_path, metadata_path, labels_path = _machine_run_paths(source, config)
+    errors: list[str] = []
+    warnings: list[str] = []
+    payload: dict[str, object] = {
+        "source": str(source),
+        "paths": {
+            "sensor_csv": str(sensor_path),
+            "cnc_csv": str(cnc_path),
+            "metadata_json": str(metadata_path),
+            "labels_csv": str(labels_path),
+        },
+        "required_sensor_columns": (config.sensor_time_column, *config.sensor_columns),
+        "required_cnc_columns": (config.cnc_time_column, config.spindle_column),
+        "valid": False,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+    metadata = _read_json_if_exists(metadata_path)
+    payload["metadata_run_id"] = _metadata_value(metadata, ("run_id",), default=source.name)
+
+    sensor_rows = _read_csv_preview(sensor_path, errors)
+    if sensor_rows:
+        sensor_fieldnames = tuple(sensor_rows[0].keys())
+        missing = [column for column in (config.sensor_time_column, *config.sensor_columns) if column not in sensor_fieldnames]
+        if missing:
+            errors.append(f"{sensor_path} is missing sensor columns: {', '.join(missing)}")
+        else:
+            try:
+                sensor_arrays = _csv_numeric_arrays(sensor_path, (config.sensor_time_column, *config.sensor_columns))
+                sensor_time = sensor_arrays[config.sensor_time_column]
+                sample_rate, jitter = _timebase_summary(sensor_time, errors, "sensor")
+                payload["sensor"] = {
+                    "rows": int(sensor_time.size),
+                    "duration_s": _duration(sensor_time),
+                    "sample_rate_hz": sample_rate,
+                    "median_jitter_fraction": jitter,
+                    "columns": sensor_fieldnames,
+                }
+                if jitter > 0.02:
+                    warnings.append(f"sensor timebase jitter is {jitter:.3f}; resample before high-confidence validation")
+            except ValueError as exc:
+                errors.append(str(exc))
+
+    cnc_rows = _read_csv_preview(cnc_path, errors)
+    if cnc_rows:
+        cnc_fieldnames = tuple(cnc_rows[0].keys())
+        has_feed = config.feed_per_tooth_column in cnc_fieldnames or config.feed_mm_min_column in cnc_fieldnames
+        missing = [column for column in (config.cnc_time_column, config.spindle_column) if column not in cnc_fieldnames]
+        if not has_feed:
+            missing.append(f"{config.feed_per_tooth_column} or {config.feed_mm_min_column}")
+        if missing:
+            errors.append(f"{cnc_path} is missing CNC columns: {', '.join(missing)}")
+        else:
+            try:
+                cnc_arrays = _csv_numeric_arrays(
+                    cnc_path,
+                    tuple(column for column in (config.cnc_time_column, config.spindle_column, config.feed_per_tooth_column) if column in cnc_fieldnames),
+                )
+                if config.feed_mm_min_column in cnc_fieldnames:
+                    cnc_arrays[config.feed_mm_min_column] = _csv_numeric_arrays(cnc_path, (config.feed_mm_min_column,))[config.feed_mm_min_column]
+                cnc_time = cnc_arrays[config.cnc_time_column]
+                cnc_rate, cnc_jitter = _timebase_summary(cnc_time, errors, "cnc", min_rows=2)
+                payload["cnc_context"] = {
+                    "rows": int(cnc_time.size),
+                    "duration_s": _duration(cnc_time),
+                    "sample_rate_hz": cnc_rate,
+                    "median_jitter_fraction": cnc_jitter,
+                    "columns": cnc_fieldnames,
+                }
+            except ValueError as exc:
+                errors.append(str(exc))
+
+    if labels_path.exists():
+        label_rows = _read_csv_preview(labels_path, errors)
+        missing = {"start_time_s", "end_time_s", "label"} - set(label_rows[0].keys() if label_rows else ())
+        if missing:
+            errors.append(f"{labels_path} is missing label columns: {', '.join(sorted(missing))}")
+        else:
+            try:
+                labels = _read_label_intervals(labels_path)
+                payload["labels"] = {
+                    "intervals": len(labels),
+                    "label_counts": dict(sorted(Counter(label for _, _, label in labels).items())),
+                }
+            except ValueError as exc:
+                errors.append(str(exc))
+    else:
+        warnings.append("labels.csv is absent; imported windows will use the configured default label")
+        payload["labels"] = {"intervals": 0, "label_counts": {}}
+
+    payload["valid"] = not errors
+    return payload
+
+
+def ingest_machine_run_dataset(
+    *,
+    source: Path,
+    out_dir: Path,
+    config: MachineRunIngestConfig | None = None,
+) -> dict[str, object]:
+    config = config or MachineRunIngestConfig()
+    inspection = inspect_machine_run(source, config)
+    if inspection["errors"]:
+        raise ValueError("; ".join(str(error) for error in inspection["errors"]))
+
+    sensor_path, cnc_path, metadata_path, labels_path = _machine_run_paths(source, config)
+    metadata = _read_json_if_exists(metadata_path)
+    sensor_arrays = _csv_numeric_arrays(sensor_path, (config.sensor_time_column, *config.sensor_columns))
+    sensor_time_raw = sensor_arrays[config.sensor_time_column]
+    sensor_time = sensor_time_raw - float(sensor_time_raw[0])
+    sensor_signal = np.column_stack([sensor_arrays[column] for column in config.sensor_columns]).astype(float)
+    sample_rate_hz, _ = _timebase_summary(sensor_time, [], "sensor")
+
+    cnc_fieldnames = tuple(_read_csv_preview(cnc_path, [])[0].keys())
+    cnc_columns = [config.cnc_time_column, config.spindle_column]
+    if config.feed_per_tooth_column in cnc_fieldnames:
+        cnc_columns.append(config.feed_per_tooth_column)
+    if config.feed_mm_min_column in cnc_fieldnames:
+        cnc_columns.append(config.feed_mm_min_column)
+    cnc_arrays = _csv_numeric_arrays(cnc_path, tuple(cnc_columns))
+    cnc_time = cnc_arrays[config.cnc_time_column] - float(sensor_time_raw[0])
+    spindle_at_cnc = cnc_arrays[config.spindle_column]
+    if config.feed_per_tooth_column in cnc_arrays:
+        feed_per_tooth_at_cnc = cnc_arrays[config.feed_per_tooth_column]
+    else:
+        flute_count = int(_metadata_value(metadata, ("tool", "flute_count"), default=4))
+        feed_per_tooth_at_cnc = (cnc_arrays[config.feed_mm_min_column] / 1000.0) / np.maximum(spindle_at_cnc * flute_count, 1.0e-12)
+
+    spindle_rpm = np.interp(sensor_time, cnc_time, spindle_at_cnc, left=spindle_at_cnc[0], right=spindle_at_cnc[-1])
+    feed_per_tooth_m = np.interp(
+        sensor_time,
+        cnc_time,
+        feed_per_tooth_at_cnc,
+        left=feed_per_tooth_at_cnc[0],
+        right=feed_per_tooth_at_cnc[-1],
+    )
+
+    modal = _metadata_modal(metadata)
+    tool = _metadata_tool(metadata)
+    cut = _metadata_cut(metadata, spindle_rpm=float(np.median(spindle_rpm)), feed_per_tooth_m=float(np.median(feed_per_tooth_m)))
+    result = SimulationResult(
+        time_s=sensor_time,
+        displacement_m=np.zeros((sensor_signal.shape[0], 2), dtype=float),
+        velocity_m_s=np.zeros((sensor_signal.shape[0], 2), dtype=float),
+        acceleration_m_s2=np.zeros((sensor_signal.shape[0], 2), dtype=float),
+        cutting_force_n=np.zeros((sensor_signal.shape[0], 2), dtype=float),
+        sensor_signal=sensor_signal,
+        modal=modal,
+        tool=tool,
+        cut=cut,
+        axial_depth_m=np.full(sensor_signal.shape[0], cut.axial_depth_m, dtype=float),
+        cutting_coeff_t_n_m2=np.full(sensor_signal.shape[0], cut.cutting_coeff_t_n_m2, dtype=float),
+        cutting_coeff_r_n_m2=np.full(sensor_signal.shape[0], cut.cutting_coeff_r_n_m2, dtype=float),
+        spindle_rpm=spindle_rpm,
+        feed_per_tooth_m=feed_per_tooth_m,
+    )
+    windows, records = slice_result_windows(
+        result=result,
+        scenario=str(_metadata_value(metadata, ("run_id",), default=source.name)),
+        episode=0,
+        window_spec=WindowSpec(window_s=config.window_s, stride_s=config.stride_s),
+        starting_window_id=0,
+        randomization_metadata={"randomized": False},
+        horizon=HorizonConfig(horizon_s=config.horizon_s),
+    )
+    if config.max_windows is not None:
+        windows = windows[: config.max_windows]
+        records = records[: config.max_windows]
+    if not records:
+        raise ValueError("No machine-run replay windows produced; reduce window size or check sensor duration")
+
+    label_intervals = _read_label_intervals(labels_path, time_origin_s=float(sensor_time_raw[0])) if labels_path.exists() else []
+    labelled_records = [
+        replace(
+            record,
+            label=label,
+            label_id=LABEL_TO_ID[label],
+            horizon_label=label,
+            horizon_label_id=LABEL_TO_ID[label],
+            chatter_within_horizon=label in CHATTER_POSITIVE_LABELS,
+            future_chatter_within_horizon=False,
+            time_to_chatter_s=0.0 if label in CHATTER_POSITIVE_LABELS else -1.0,
+        )
+        for record, label in (
+            (record, _label_for_window(record.start_time_s, record.end_time_s, label_intervals, config.default_label))
+            for record in records
+        )
+    ]
+    labelled_records = attach_horizon_targets(labelled_records, HorizonConfig(horizon_s=config.horizon_s))
+    sensor_windows = np.stack(windows).astype(np.float32)
+    manifest = _machine_run_manifest(labelled_records, metadata, config, sensor_windows)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _write_real_replay_dataset(out_dir, labelled_records, sensor_windows, manifest)
+    _write_machine_run_readme(out_dir / "README.md", manifest, inspection)
+    return {
+        "manifest": asdict(manifest),
+        "inspection": inspection,
+        "artifacts": ("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    }
 
 
 def download_icnc_dataset(
@@ -2079,6 +2413,271 @@ def _bosch_cnc_manifest(
         horizon={"horizon_s": config.horizon_s},
         artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
     )
+
+
+def _machine_run_manifest(
+    records: list[WindowRecord],
+    metadata: dict[str, Any],
+    config: MachineRunIngestConfig,
+    sensor_windows: NDArray[np.float32],
+) -> DatasetManifest:
+    counts = Counter(record.label for record in records)
+    run_id = str(_metadata_value(metadata, ("run_id",), default="machine_run"))
+    return DatasetManifest(
+        schema_version="chatter-window-v5",
+        sample_rate_hz=result_sample_rate(records, sensor_windows),
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        channel_names=tuple(config.sensor_columns),
+        scenarios=(run_id,),
+        episodes_per_scenario=1,
+        total_windows=len(records),
+        label_counts=dict(sorted(counts.items())),
+        domain_randomization={
+            "enabled": False,
+            "source": "user_machine_run",
+        },
+        sampling_strategy={
+            "dataset": "user_machine_run",
+            "run_id": run_id,
+            "max_windows": config.max_windows,
+            "sensor_csv": config.sensor_csv,
+            "cnc_csv": config.cnc_csv,
+            "labels_csv": config.labels_csv,
+            "label_source": "local labels.csv intervals; absent intervals use default_label",
+            "default_label": config.default_label,
+            "modality": "synchronized high-rate sensor CSV plus CNC/controller context CSV",
+            "machine": metadata.get("machine", {}),
+            "tool": metadata.get("tool", {}),
+            "process": metadata.get("process", {}),
+        },
+        horizon={"horizon_s": config.horizon_s},
+        artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    )
+
+
+def _machine_run_paths(source: Path, config: MachineRunIngestConfig) -> tuple[Path, Path, Path, Path]:
+    return (
+        source / config.sensor_csv,
+        source / config.cnc_csv,
+        source / config.metadata_json,
+        source / config.labels_csv,
+    )
+
+
+def _read_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _metadata_value(metadata: dict[str, Any], path: tuple[str, ...], *, default: Any) -> Any:
+    value: Any = metadata
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return default
+        value = value[key]
+    return default if value in ("", None) else value
+
+
+def _metadata_modal(metadata: dict[str, Any]) -> ModalParams:
+    modal = metadata.get("modal", {}) if isinstance(metadata.get("modal"), dict) else {}
+    return ModalParams(
+        mass_x_kg=float(modal.get("mass_x_kg", ModalParams().mass_x_kg)),
+        mass_y_kg=float(modal.get("mass_y_kg", ModalParams().mass_y_kg)),
+        stiffness_x_n_m=float(modal.get("stiffness_x_n_m", ModalParams().stiffness_x_n_m)),
+        stiffness_y_n_m=float(modal.get("stiffness_y_n_m", ModalParams().stiffness_y_n_m)),
+        damping_x_n_s_m=float(modal.get("damping_x_n_s_m", ModalParams().damping_x_n_s_m)),
+        damping_y_n_s_m=float(modal.get("damping_y_n_s_m", ModalParams().damping_y_n_s_m)),
+    )
+
+
+def _metadata_tool(metadata: dict[str, Any]) -> ToolConfig:
+    tool = metadata.get("tool", {}) if isinstance(metadata.get("tool"), dict) else {}
+    return ToolConfig(
+        diameter_m=float(tool.get("diameter_m", ToolConfig().diameter_m)),
+        flute_count=int(tool.get("flute_count", ToolConfig().flute_count)),
+        overhang_m=float(tool.get("overhang_m", ToolConfig().overhang_m)),
+        runout_m=float(tool.get("runout_m", ToolConfig().runout_m)),
+    )
+
+
+def _metadata_cut(metadata: dict[str, Any], *, spindle_rpm: float, feed_per_tooth_m: float) -> CutConfig:
+    process = metadata.get("process", {}) if isinstance(metadata.get("process"), dict) else {}
+    return CutConfig(
+        spindle_rpm=spindle_rpm,
+        feed_per_tooth_m=feed_per_tooth_m,
+        axial_depth_m=float(process.get("axial_depth_m", CutConfig().axial_depth_m)),
+        radial_depth_m=float(process.get("radial_depth_m", CutConfig().radial_depth_m)),
+        cutting_coeff_t_n_m2=float(process.get("cutting_coeff_t_n_m2", CutConfig().cutting_coeff_t_n_m2)),
+        cutting_coeff_r_n_m2=float(process.get("cutting_coeff_r_n_m2", CutConfig().cutting_coeff_r_n_m2)),
+        immersion_start_rad=float(process.get("immersion_start_rad", CutConfig().immersion_start_rad)),
+        immersion_end_rad=float(process.get("immersion_end_rad", CutConfig().immersion_end_rad)),
+    )
+
+
+def _read_csv_preview(path: Path, errors: list[str]) -> list[dict[str, str]]:
+    if not path.exists():
+        errors.append(f"{path} does not exist")
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = []
+        for _, row in zip(range(3), reader):
+            rows.append(row)
+    if not rows:
+        errors.append(f"{path} contains no data rows")
+    return rows
+
+
+def _csv_numeric_arrays(path: Path, columns: tuple[str, ...]) -> dict[str, NDArray[np.float64]]:
+    values = {column: [] for column in columns}
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        missing = [column for column in columns if column not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"{path} is missing columns: {', '.join(missing)}")
+        for row_idx, row in enumerate(reader, start=2):
+            for column in columns:
+                try:
+                    values[column].append(float(row[column]))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{path}:{row_idx} has non-numeric value for {column!r}: {row[column]!r}") from exc
+    return {column: np.array(column_values, dtype=float) for column, column_values in values.items()}
+
+
+def _timebase_summary(
+    time_s: NDArray[np.float64],
+    errors: list[str],
+    name: str,
+    *,
+    min_rows: int = 4,
+) -> tuple[float, float]:
+    if time_s.size < min_rows:
+        errors.append(f"{name} timebase needs at least {min_rows} rows")
+        return 0.0, 0.0
+    dt = np.diff(time_s)
+    if np.any(dt <= 0):
+        errors.append(f"{name} timebase must be strictly increasing")
+        return 0.0, 0.0
+    median_dt = float(np.median(dt))
+    jitter = float(np.median(np.abs(dt - median_dt)) / max(median_dt, 1.0e-12))
+    return float(1.0 / median_dt), jitter
+
+
+def _duration(time_s: NDArray[np.float64]) -> float:
+    if time_s.size < 2:
+        return 0.0
+    return float(time_s[-1] - time_s[0])
+
+
+def _read_label_intervals(path: Path, *, time_origin_s: float = 0.0) -> list[tuple[float, float, str]]:
+    intervals: list[tuple[float, float, str]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row_idx, row in enumerate(reader, start=2):
+            label = _status_to_label(row.get("label", "unknown"))
+            try:
+                start = float(row["start_time_s"]) - time_origin_s
+                end = float(row["end_time_s"]) - time_origin_s
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}:{row_idx} has invalid label interval") from exc
+            if end <= start:
+                raise ValueError(f"{path}:{row_idx} end_time_s must exceed start_time_s")
+            intervals.append((start, end, label))
+    return intervals
+
+
+def _label_for_window(
+    start_time_s: float,
+    end_time_s: float,
+    intervals: list[tuple[float, float, str]],
+    default_label: str,
+) -> str:
+    center = 0.5 * (start_time_s + end_time_s)
+    labels = [label for start, end, label in intervals if start <= center <= end]
+    if not labels:
+        return default_label
+    return max(labels, key=lambda label: {"unknown": -1, "stable": 0, "transition": 1, "slight": 2, "severe": 3}[label])
+
+
+def _write_machine_run_readme(path: Path, manifest: DatasetManifest, inspection: dict[str, object]) -> None:
+    lines = [
+        "# User Machine Run Replay Dataset",
+        "",
+        "Imported from a local CNC/controller context log and high-rate sensor log.",
+        "",
+        f"Total windows: `{manifest.total_windows}`",
+        f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
+        f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
+        f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
+        f"Channels: `{', '.join(manifest.channel_names)}`",
+        "",
+        "## Label Counts",
+        "",
+        "| Label | Count |",
+        "|---|---:|",
+    ]
+    for label, count in manifest.label_counts.items():
+        lines.append(f"| {label} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Validation",
+            "",
+            f"- Valid input contract: `{inspection['valid']}`",
+            f"- Warnings: `{len(inspection['warnings'])}`",
+            "",
+            "## Caveats",
+            "",
+            "- Physics margin quality depends on `run_metadata.json`; update modal and cutting coefficients after calibration.",
+            "- Labels should be confirmed with spectra plus surface/tool evidence before publication claims.",
+            "- This importer does not write CNC commands; it prepares replay data for shadow validation and offline training.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _machine_run_template_readme() -> str:
+    return "\n".join(
+        [
+            "# Machine Run Capture Template",
+            "",
+            "Use this folder shape for the first real CNC validation pass.",
+            "",
+            "Required files:",
+            "",
+            "- `run_metadata.json`: machine, tool, process, modal, and sensor metadata.",
+            "- `sensors.csv`: high-rate sensor samples with one shared `time_s` origin.",
+            "- `cnc_context.csv`: controller context sampled at controller/API rate.",
+            "- `labels.csv`: optional intervals for stable/transition/slight/severe labels.",
+            "",
+            "Minimum `sensors.csv` columns: `time_s,accel_x,accel_y,accel_z`.",
+            "Minimum `cnc_context.csv` columns: `time_s,spindle_rpm,feed_per_tooth_m`; `feed_mm_min` can replace `feed_per_tooth_m`.",
+            "",
+            "Validate before ingesting:",
+            "",
+            "```bash",
+            "rtk uv run chatter-twin validate-machine-run --source data/raw/machine_run_001",
+            "```",
+            "",
+            "Ingest into the shared replay schema:",
+            "",
+            "```bash",
+            "rtk uv run chatter-twin ingest-machine-run --source data/raw/machine_run_001 --out results/machine_run_001_replay",
+            "```",
+            "",
+        ]
+    )
+
+
+def _write_dict_rows(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _write_real_replay_dataset(

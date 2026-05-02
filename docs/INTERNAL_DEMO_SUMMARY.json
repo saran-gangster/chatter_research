@@ -4,6 +4,7 @@
     "Closed-loop benchmark": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
     "Hardware-actuation gate": "results/rl_td3_fixed_mrr2_hardware_actuation_gate_demo",
     "Live-shadow gate": "results/rl_td3_fixed_mrr2_live_shadow_gate_demo",
+    "Machine run data contract": "docs/MACHINE_RUN_DATA_CONTRACT.md",
     "RL champion": "results/rl_td3_fixed_mrr2_shadow_champion",
     "RL shadow replay": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
     "RL stress comparison": "results/rl_td3_harsh_stress_comparison",
@@ -40,7 +41,7 @@
     "rl_shadow_replay_dir": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
     "shadow_eval_dir": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
     "shadow_review_gate_dir": "results/rl_td3_fixed_mrr2_shadow_gate_demo",
-    "test_status": "118 passed in 16.89s"
+    "test_status": "123 passed in 18.36s"
   },
   "controller_baselines": {
     "best_by_risk": {
@@ -105,7 +106,7 @@
     "path": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
     "status": "validated_synthetic_benchmark"
   },
-  "generated_at": "2026-05-02T17:58:20+00:00",
+  "generated_at": "2026-05-02T19:06:02+00:00",
   "promotion_gates": [
     {
       "failed_checks": [],
@@ -226,7 +227,7 @@
     "status": "shadow_policy_evaluated",
     "warning_fraction": 0.4
   },
-  "test_status": "118 passed in 16.89s",
+  "test_status": "123 passed in 18.36s",
   "validation_boundary": {
     "not_validated_yet": [
       "No MTConnect or controller API connection is implemented.",
@@ -238,7 +239,8 @@
       "Simulator, risk estimator, controller comparisons, shielded RL replay, and promotion gates run end to end.",
       "The selected TD3 policy passes the offline shadow-review gate.",
       "The same policy is blocked from live-shadow and hardware-actuation profiles.",
-      "Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks."
+      "Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks.",
+      "User-machine run logs can now be validated and ingested from synchronized CNC context plus high-rate sensor CSVs."
     ]
   }
 }

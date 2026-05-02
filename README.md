@@ -20,6 +20,8 @@ scaffold with no CNC hardware writes and no live-machine dependency.
 - Synthetic replay-window export with optional domain randomization.
 - i-CNC, KIT, Purdue, and Bosch public dataset helpers for first real-data
   signal-validation and pipeline stress-test passes.
+- User-machine run template, validator, and importer for synchronized CNC
+  context plus high-rate sensor captures.
 - Offline shadow-mode recommendation, counterfactual replay, and action-sweep
   evaluation from risk-model predictions.
 - Reproducible internal demo report that summarizes calibration, risk,
@@ -53,6 +55,9 @@ rtk uv run chatter-twin real-data-benchmark --out results/real_data_benchmark_cu
 rtk uv run chatter-twin risk-error-analysis --model-dir results/mt_cutting_sensor0_current_scenario_baseline_12k --out results/mt_cutting_sensor0_scenario_error_analysis_12k --group-column scenario
 rtk uv run chatter-twin inspect-bosch-cnc --source data/raw/kaggle/cnc-machining-data --out data/raw/kaggle/cnc-machining-data/inspection.json
 rtk uv run chatter-twin ingest-bosch-cnc --source data/raw/kaggle/cnc-machining-data --out results/bosch_cnc_balanced_replay_20files_per_quality --max-files-per-quality 20
+rtk uv run chatter-twin machine-run-template --out data/raw/machine_run_001
+rtk uv run chatter-twin validate-machine-run --source data/raw/machine_run_001 --out data/raw/machine_run_001/validation.json
+rtk uv run chatter-twin ingest-machine-run --source data/raw/machine_run_001 --out results/machine_run_001_replay --window 0.1 --stride 0.05 --horizon 0.25
 rtk uv run chatter-twin train-risk --dataset results/synthetic_replay_demo --out results/risk_model_demo --epochs 800
 rtk uv run chatter-twin train-risk --dataset results/synthetic_randomized_demo --out results/risk_model_axial_depth_holdout_demo --epochs 800 --split-mode parameter_family --holdout-column axial_depth_scale --holdout-tail high
 rtk uv run chatter-twin train-risk --dataset results/synthetic_onset_demo --out results/risk_model_hist_gb_interaction_onset_horizon_episode_validated_demo --model hist_gb --calibration none --feature-set interaction_temporal --target horizon --split-mode episode --validation-fraction 0.25
@@ -131,6 +136,14 @@ subsets are written under ignored `results/`. `ingest-icnc` skips
 `No Machining`/unknown packages by default; pass `--include-unknown` only when
 you want an operational-state dataset instead of cutting-only validation data.
 See `docs/REAL_DATASETS.md`.
+
+`chatter-twin machine-run-template`, `validate-machine-run`, and
+`ingest-machine-run` define the first real CNC data contract for this project.
+The expected run folder contains `run_metadata.json`, `sensors.csv`,
+`cnc_context.csv`, and optional `labels.csv`. The ingester converts synchronized
+DAQ/controller logs into the same `dataset.npz`, `windows.csv`, and
+`manifest.json` replay schema used by the synthetic and public-data importers.
+See `docs/MACHINE_RUN_DATA_CONTRACT.md`.
 
 `chatter-twin real-data-benchmark` collects completed public-data risk-model
 runs into one claim-bounded table. The default table currently covers i-CNC,

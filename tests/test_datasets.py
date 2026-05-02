@@ -13,18 +13,22 @@ from chatter_twin.datasets import (
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
     KITMatIngestConfig,
+    MachineRunIngestConfig,
     MTCuttingIngestConfig,
     discover_icnc_csv_sources,
     ingest_bosch_cnc_dataset,
+    ingest_machine_run_dataset,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
     ingest_mt_cutting_dataset,
     ingest_icnc_dataset,
     inspect_bosch_cnc_dataset,
+    inspect_machine_run,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     inspect_mt_cutting_dataset,
     write_icnc_source_manifest,
+    write_machine_run_template,
     write_mt_cutting_source_manifest,
 )
 
@@ -189,6 +193,68 @@ def test_cli_inspect_and_ingest_bosch_cnc(tmp_path: Path):
     ) == 0
     saved_manifest = json.loads((ingest_out / "manifest.json").read_text(encoding="utf-8"))
     assert saved_manifest["total_windows"] == 3
+
+
+def test_machine_run_template_validate_and_ingest(tmp_path: Path):
+    template_dir = tmp_path / "template"
+    payload = write_machine_run_template(template_dir)
+    assert Path(payload["files"]["metadata"]).exists()
+    assert (template_dir / "README.md").exists()
+
+    source = tmp_path / "machine_run"
+    _write_minimal_machine_run(source)
+    config = MachineRunIngestConfig(window_s=0.05, stride_s=0.05, horizon_s=0.10, default_label="stable")
+
+    inspection = inspect_machine_run(source, config)
+    assert inspection["valid"] is True
+    assert inspection["sensor"]["rows"] == 240
+    assert inspection["labels"]["label_counts"] == {"slight": 1, "stable": 1, "transition": 1}
+
+    replay = ingest_machine_run_dataset(source=source, out_dir=tmp_path / "machine_replay", config=config)
+    manifest = replay["manifest"]
+    assert manifest["total_windows"] == 4
+    assert manifest["label_counts"]["slight"] >= 1
+    data = np.load(tmp_path / "machine_replay" / "dataset.npz")
+    assert data["sensor_windows"].shape == (4, 50, 3)
+    assert data["channel_names"].tolist() == ["accel_x", "accel_y", "accel_z"]
+    with (tmp_path / "machine_replay" / "windows.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["scenario"] == "fixture_run"
+    assert "slight" in {row["label"] for row in rows}
+
+
+def test_cli_machine_run_template_validate_and_ingest(tmp_path: Path):
+    source = tmp_path / "machine_run"
+    _write_minimal_machine_run(source)
+    template_dir = tmp_path / "template_cli"
+    validate_out = tmp_path / "machine_validation.json"
+    replay_out = tmp_path / "machine_replay_cli"
+
+    assert main(["machine-run-template", "--out", str(template_dir)]) == 0
+    assert main(["validate-machine-run", "--source", str(source), "--out", str(validate_out)]) == 0
+    assert json.loads(validate_out.read_text(encoding="utf-8"))["valid"] is True
+    assert (
+        main(
+            [
+                "ingest-machine-run",
+                "--source",
+                str(source),
+                "--out",
+                str(replay_out),
+                "--window",
+                "0.05",
+                "--stride",
+                "0.05",
+                "--horizon",
+                "0.1",
+                "--default-label",
+                "stable",
+            ]
+        )
+        == 0
+    )
+    saved_manifest = json.loads((replay_out / "manifest.json").read_text(encoding="utf-8"))
+    assert saved_manifest["sampling_strategy"]["dataset"] == "user_machine_run"
 
 
 def test_ingest_icnc_dataset_from_zip_with_expanded_columns(tmp_path: Path):
@@ -459,6 +525,58 @@ def _write_minimal_bosch_cnc_source(root: Path) -> None:
             writer.writeheader()
             for idx in range(8):
                 writer.writerow({"x": idx + offset, "y": 2 * idx + offset, "z": 3 * idx + offset})
+
+
+def _write_minimal_machine_run(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "run_id": "fixture_run",
+        "tool": {"diameter_m": 0.010, "flute_count": 4, "overhang_m": 0.040},
+        "process": {
+            "axial_depth_m": 0.0007,
+            "radial_depth_m": 0.004,
+            "cutting_coeff_t_n_m2": 7.0e8,
+            "cutting_coeff_r_n_m2": 2.1e8,
+        },
+        "modal": {
+            "mass_x_kg": 0.8,
+            "mass_y_kg": 0.8,
+            "stiffness_x_n_m": 1.55e7,
+            "stiffness_y_n_m": 1.25e7,
+            "damping_x_n_s_m": 210.0,
+            "damping_y_n_s_m": 190.0,
+        },
+    }
+    (root / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    sample_rate = 1_000.0
+    with (root / "sensors.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["time_s", "accel_x", "accel_y", "accel_z"])
+        writer.writeheader()
+        for idx in range(240):
+            time_s = idx / sample_rate
+            writer.writerow(
+                {
+                    "time_s": time_s,
+                    "accel_x": np.sin(2 * np.pi * 120 * time_s),
+                    "accel_y": 0.5 * np.sin(2 * np.pi * 220 * time_s),
+                    "accel_z": 0.25 * np.sin(2 * np.pi * 320 * time_s),
+                }
+            )
+    with (root / "cnc_context.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["time_s", "spindle_rpm", "feed_per_tooth_m"])
+        writer.writeheader()
+        for time_s in (0.0, 0.1, 0.2):
+            writer.writerow({"time_s": time_s, "spindle_rpm": 9000.0, "feed_per_tooth_m": 45.0e-6})
+    with (root / "labels.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["start_time_s", "end_time_s", "label"])
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"start_time_s": 0.0, "end_time_s": 0.10, "label": "stable"},
+                {"start_time_s": 0.10, "end_time_s": 0.15, "label": "transition"},
+                {"start_time_s": 0.15, "end_time_s": 0.24, "label": "slight"},
+            ]
+        )
 
 
 def _write_minimal_mt_cutting_source(root: Path) -> None:

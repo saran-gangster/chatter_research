@@ -3,6 +3,46 @@
 This log captures reproducible local artifacts and the main lesson from each
 offline experiment. All commands are CPU-only.
 
+## 2026-05-03 - User Machine Run Contract And Importer
+
+Added the first real CNC data contract for user-owned validation runs. This is
+the bridge from public/synthetic replay work to the actual machine: a capture
+folder with `run_metadata.json`, high-rate `sensors.csv`, lower-rate
+`cnc_context.csv`, and optional interval `labels.csv`.
+
+New commands:
+
+```bash
+rtk uv run chatter-twin machine-run-template --out data/raw/machine_run_001
+rtk uv run chatter-twin validate-machine-run --source data/raw/machine_run_001
+rtk uv run chatter-twin ingest-machine-run \
+  --source data/raw/machine_run_001 \
+  --out results/machine_run_001_replay \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25
+```
+
+Validation checks required files/columns, monotonic time bases, high-rate sensor
+jitter, CNC context fields, and label intervals. Ingestion converts the capture
+to the shared replay schema (`dataset.npz`, `windows.csv`, `manifest.json`) so
+`train-risk`, `shadow-eval`, and later safety gates can consume real machine
+runs without custom one-off scripts.
+
+Verification:
+
+```bash
+rtk uv run pytest tests/test_datasets.py -q
+rtk uv run pytest -q
+```
+
+Results: `16 passed in 0.88s`; full suite `123 passed in 18.36s`.
+
+Lesson: the digital twin now has a concrete real-machine input contract. The
+remaining blocker is not software plumbing for first replay import; it is
+collecting synchronized CNC/sensor data with credible labels and calibration
+metadata.
+
 ## 2026-05-01 - Randomized Replay Baseline
 
 Dataset:

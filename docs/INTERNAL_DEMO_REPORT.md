@@ -1,6 +1,6 @@
 # Chatter Twin Internal Demo Report
 
-Generated: `2026-05-02T17:58:20+00:00`
+Generated: `2026-05-02T19:06:02+00:00`
 
 ## Executive Conclusion
 
@@ -11,7 +11,7 @@ Software demo complete; real CNC validation is still the decisive missing result
 | Current stage | `offline_shadow_review` |
 | RL champion | `td3 seed 616` |
 | Hardware ready | `false` |
-| Test status | `118 passed in 16.89s` |
+| Test status | `123 passed in 18.36s` |
 
 ## What This Demo Proves
 
@@ -19,6 +19,7 @@ Software demo complete; real CNC validation is still the decisive missing result
 - The selected TD3 policy passes the offline shadow-review gate.
 - The same policy is blocked from live-shadow and hardware-actuation profiles.
 - Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks.
+- User-machine run logs can now be validated and ingested from synchronized CNC context plus high-rate sensor CSVs.
 
 ## What It Does Not Prove Yet
 
@@ -111,7 +112,7 @@ RL stress candidates:
 1. Re-run tests: `rtk uv run pytest -q`.
 2. Regenerate the RL shadow replay: `rtk uv run --extra rl chatter-twin shadow-rl-policy ...` using the command in `docs/RL_CONTROLLERS.md`.
 3. Re-run gates: `rtk uv run chatter-twin gate-rl-shadow --profile shadow_review ...`, then repeat for `live_shadow` and `hardware_actuation`.
-4. Regenerate this report: `rtk uv run chatter-twin internal-demo-report --out docs/INTERNAL_DEMO_REPORT.md --summary-out docs/INTERNAL_DEMO_SUMMARY.json --test-status "118 passed in 16.89s"`.
+4. Regenerate this report: `rtk uv run chatter-twin internal-demo-report --out docs/INTERNAL_DEMO_REPORT.md --summary-out docs/INTERNAL_DEMO_SUMMARY.json --test-status "123 passed in 18.36s"`.
 
 ## Artifact Map
 
@@ -128,6 +129,7 @@ RL stress candidates:
 | Shadow-review gate | `results/rl_td3_fixed_mrr2_shadow_gate_demo` |
 | Live-shadow gate | `results/rl_td3_fixed_mrr2_live_shadow_gate_demo` |
 | Hardware-actuation gate | `results/rl_td3_fixed_mrr2_hardware_actuation_gate_demo` |
+| Machine run data contract | `docs/MACHINE_RUN_DATA_CONTRACT.md` |
 
 ## Next Result Barrier
 

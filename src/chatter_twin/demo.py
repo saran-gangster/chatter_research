@@ -70,6 +70,7 @@ def build_internal_demo_payload(config: InternalDemoConfig = InternalDemoConfig(
                 "The selected TD3 policy passes the offline shadow-review gate.",
                 "The same policy is blocked from live-shadow and hardware-actuation profiles.",
                 "Public synchronized high-rate KIT force/acceleration data has been ingested for offline replay sanity checks.",
+                "User-machine run logs can now be validated and ingested from synchronized CNC context plus high-rate sensor CSVs.",
             ],
             "not_validated_yet": [
                 "No MTConnect or controller API connection is implemented.",
@@ -455,6 +456,7 @@ def _artifact_summary(config: InternalDemoConfig) -> dict[str, str]:
         "Shadow-review gate": str(config.shadow_review_gate_dir),
         "Live-shadow gate": str(config.live_shadow_gate_dir),
         "Hardware-actuation gate": str(config.hardware_gate_dir),
+        "Machine run data contract": "docs/MACHINE_RUN_DATA_CONTRACT.md",
     }
 
 

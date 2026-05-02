@@ -25,17 +25,21 @@ from chatter_twin.datasets import (
     KITIndustrialIngestConfig,
     KITMatIngestConfig,
     KIT_INDUSTRIAL_FILENAME,
+    MachineRunIngestConfig,
     MTCuttingIngestConfig,
     download_icnc_dataset,
     ingest_bosch_cnc_dataset,
+    ingest_machine_run_dataset,
     ingest_mt_cutting_dataset,
     ingest_kit_industrial_dataset,
     ingest_kit_mat_dataset,
     inspect_mt_cutting_dataset,
     inspect_bosch_cnc_dataset,
+    inspect_machine_run,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     ingest_icnc_dataset,
+    write_machine_run_template,
     write_icnc_source_manifest,
     write_kit_industrial_source_manifest,
     write_mt_cutting_source_manifest,
@@ -66,7 +70,7 @@ from chatter_twin.pseudo_label import (
 )
 from chatter_twin.realdata import parse_real_data_run_spec, write_real_data_benchmark, write_risk_error_analysis
 from chatter_twin.risk import estimate_chatter_risk
-from chatter_twin.replay import DomainRandomizationConfig, HorizonConfig, TransitionFocusConfig, WindowSpec, export_synthetic_dataset
+from chatter_twin.replay import LABEL_TO_ID, DomainRandomizationConfig, HorizonConfig, TransitionFocusConfig, WindowSpec, export_synthetic_dataset
 from chatter_twin.rl import (
     MultiSeedTrainingConfig,
     QLearningConfig,
@@ -481,6 +485,26 @@ def main(argv: list[str] | None = None) -> int:
     inspect_bosch.add_argument("--source", type=Path, required=True)
     inspect_bosch.add_argument("--out", type=Path, default=None)
 
+    machine_template = subparsers.add_parser("machine-run-template")
+    machine_template.add_argument("--out", type=Path, required=True)
+    machine_template.add_argument("--overwrite", action="store_true")
+
+    validate_machine = subparsers.add_parser("validate-machine-run")
+    validate_machine.add_argument("--source", type=Path, required=True)
+    validate_machine.add_argument("--out", type=Path, default=None)
+    validate_machine.add_argument("--sensor-columns", default="accel_x,accel_y,accel_z")
+    validate_machine.add_argument("--default-label", choices=list(LABEL_TO_ID), default="unknown")
+
+    ingest_machine = subparsers.add_parser("ingest-machine-run")
+    ingest_machine.add_argument("--source", type=Path, required=True)
+    ingest_machine.add_argument("--out", type=Path, required=True)
+    ingest_machine.add_argument("--sensor-columns", default="accel_x,accel_y,accel_z")
+    ingest_machine.add_argument("--window", type=float, default=0.10)
+    ingest_machine.add_argument("--stride", type=float, default=0.05)
+    ingest_machine.add_argument("--horizon", type=float, default=0.25)
+    ingest_machine.add_argument("--default-label", choices=list(LABEL_TO_ID), default="unknown")
+    ingest_machine.add_argument("--max-windows", type=int, default=None)
+
     ingest_bosch = subparsers.add_parser("ingest-bosch-cnc")
     ingest_bosch.add_argument("--source", type=Path, required=True)
     ingest_bosch.add_argument("--out", type=Path, required=True)
@@ -626,6 +650,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_inspect_mt_cutting(args)
         case "inspect-bosch-cnc":
             return _cmd_inspect_bosch_cnc(args)
+        case "machine-run-template":
+            return _cmd_machine_run_template(args)
+        case "validate-machine-run":
+            return _cmd_validate_machine_run(args)
+        case "ingest-machine-run":
+            return _cmd_ingest_machine_run(args)
         case "inspect-kit-mat":
             return _cmd_inspect_kit_mat(args)
         case "download-icnc":
@@ -1426,6 +1456,56 @@ def _cmd_inspect_bosch_cnc(args: argparse.Namespace) -> int:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _machine_run_config_from_args(args: argparse.Namespace) -> MachineRunIngestConfig:
+    defaults = MachineRunIngestConfig()
+    return MachineRunIngestConfig(
+        sensor_columns=tuple(column.strip() for column in args.sensor_columns.split(",") if column.strip()),
+        window_s=getattr(args, "window", defaults.window_s),
+        stride_s=getattr(args, "stride", defaults.stride_s),
+        horizon_s=getattr(args, "horizon", defaults.horizon_s),
+        default_label=args.default_label,
+        max_windows=getattr(args, "max_windows", None),
+    )
+
+
+def _cmd_machine_run_template(args: argparse.Namespace) -> int:
+    payload = write_machine_run_template(args.out, overwrite=args.overwrite)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_validate_machine_run(args: argparse.Namespace) -> int:
+    payload = inspect_machine_run(args.source, _machine_run_config_from_args(args))
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if payload["valid"] else 2
+
+
+def _cmd_ingest_machine_run(args: argparse.Namespace) -> int:
+    payload = ingest_machine_run_dataset(
+        source=args.source,
+        out_dir=args.out,
+        config=_machine_run_config_from_args(args),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

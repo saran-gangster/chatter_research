@@ -146,7 +146,29 @@ manifest records this under `sampling_strategy.transition_focus`.
 
 ## Real Data Contract
 
-Future hardware log importers should write the same `dataset.npz` and
-`windows.csv` shapes. Real datasets can add extra channels, but must preserve
-the required arrays above so the risk estimator, benchmark tools, and training
-code can consume synthetic and real replay windows interchangeably.
+Hardware log importers now write the same `dataset.npz` and `windows.csv`
+shapes. Real datasets can add extra channels, but must preserve the required
+arrays above so the risk estimator, benchmark tools, and training code can
+consume synthetic and real replay windows interchangeably.
+
+For a user-owned CNC run, create and validate the capture folder first:
+
+```bash
+rtk uv run chatter-twin machine-run-template --out data/raw/machine_run_001
+rtk uv run chatter-twin validate-machine-run --source data/raw/machine_run_001
+```
+
+Then import synchronized high-rate sensor and controller logs:
+
+```bash
+rtk uv run chatter-twin ingest-machine-run \
+  --source data/raw/machine_run_001 \
+  --out results/machine_run_001_replay \
+  --window 0.1 \
+  --stride 0.05 \
+  --horizon 0.25
+```
+
+See `docs/MACHINE_RUN_DATA_CONTRACT.md` for the required
+`run_metadata.json`, `sensors.csv`, `cnc_context.csv`, and `labels.csv`
+contract.
