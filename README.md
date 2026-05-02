@@ -20,6 +20,8 @@ scaffold with no CNC hardware writes and no live-machine dependency.
 - Synthetic replay-window export with optional domain randomization.
 - Offline shadow-mode recommendation, counterfactual replay, and action-sweep
   evaluation from risk-model predictions.
+- Reproducible internal demo report that summarizes calibration, risk,
+  controller, RL, shadow replay, and gate-readiness artifacts.
 - CLI smoke demos.
 
 ## Quick Start
@@ -61,6 +63,7 @@ rtk uv run --extra rl chatter-twin train-rl-multiseed --algorithms sac --seeds 6
 rtk uv run --extra rl chatter-twin train-rl-multiseed --algorithms sac --seeds 616,717,818 --scenarios stable,near_boundary,onset,unstable --total-timesteps 1000 --eval-episodes 4 --steps 8 --decision-interval 0.08 --learning-starts 100 --batch-size 32 --buffer-size 10000 --randomize --action-mode delta --uncertainty-mode hold --productivity-mode mrr --productivity-weight 2.0 --smoothness-weight 0.1 --margin-calibration results/margin_calibration_context_family_holdout_demo/calibration.json --out results/rl_sac_delta_uncertainty_hold_cpu_long_demo
 rtk uv run --extra rl chatter-twin train-rl-multiseed --algorithms td3 --seeds 616,717,818 --scenarios stable,near_boundary,onset,unstable --total-timesteps 1000 --eval-episodes 4 --steps 8 --decision-interval 0.08 --learning-starts 100 --batch-size 32 --buffer-size 10000 --randomize --action-mode delta --uncertainty-mode hold --productivity-mode mrr --productivity-weight 2.0 --smoothness-weight 0.1 --margin-calibration results/margin_calibration_context_family_holdout_demo/calibration.json --out results/rl_td3_delta_uncertainty_hold_cpu_long_demo
 rtk uv run chatter-twin compare-rl-runs --run sac_strict=results/rl_sac_delta_cpu_long_randomized_demo --run sac_hold=results/rl_sac_delta_uncertainty_hold_cpu_long_demo --run td3_hold=results/rl_td3_delta_uncertainty_hold_cpu_long_demo --baseline-label sac_strict --out results/rl_strict_hold_delta_comparison_demo
+rtk uv run chatter-twin internal-demo-report --out docs/INTERNAL_DEMO_REPORT.md --summary-out docs/INTERNAL_DEMO_SUMMARY.json
 ```
 
 ## Benchmark Outputs
@@ -197,6 +200,15 @@ risk, productivity, fallback, action-burden, shield-rejection, and deployment
 boundary gates before promoting it. Gate profiles are staged as
 `shadow_review`, `live_shadow`, and `hardware_actuation`; passing any gate still
 does not enable CNC writes.
+
+## Internal Demo
+
+`chatter-twin internal-demo-report` collects the current ignored `results/`
+artifacts into a tracked demo narrative at `docs/INTERNAL_DEMO_REPORT.md` and a
+machine-readable summary at `docs/INTERNAL_DEMO_SUMMARY.json`. The current
+report conclusion is: the good internal offline demo is complete, the selected
+TD3 policy is a shadow-review candidate, and real CNC validation remains the
+next result barrier.
 
 ## Safety Boundary
 

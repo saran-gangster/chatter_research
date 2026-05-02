@@ -1,0 +1,243 @@
+{
+  "artifacts": {
+    "Calibration": "results/margin_calibration_context_family_holdout_demo",
+    "Closed-loop benchmark": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
+    "Hardware-actuation gate": "results/rl_td3_fixed_mrr2_hardware_actuation_gate_demo",
+    "Live-shadow gate": "results/rl_td3_fixed_mrr2_live_shadow_gate_demo",
+    "RL champion": "results/rl_td3_fixed_mrr2_shadow_champion",
+    "RL shadow replay": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
+    "RL stress comparison": "results/rl_td3_harsh_stress_comparison",
+    "Risk model": "results/risk_model_hist_gb_interaction_onset_events_axial_depth_holdout_validated_demo",
+    "Risk-model shadow policy": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
+    "Shadow counterfactual": "results/shadow_counterfactual_counterfactual_policy_onset_events_axial_depth_holdout_validated_demo",
+    "Shadow-review gate": "results/rl_td3_fixed_mrr2_shadow_gate_demo"
+  },
+  "calibration": {
+    "holdout_accuracy": 0.7388888888888889,
+    "holdout_mae": 0.14727489781981826,
+    "holdout_roc_auc": 0.7637600494743352,
+    "one_line": "900 synthetic calibration samples, holdout ROC AUC 0.764",
+    "path": "results/margin_calibration_context_family_holdout_demo",
+    "sample_count": 900,
+    "status": "validated_synthetic_holdout",
+    "train_roc_auc": 0.829391891891892
+  },
+  "conclusion": {
+    "current_stage": "offline_shadow_review",
+    "hardware_ready": false,
+    "headline": "Software demo complete; real CNC validation is still the decisive missing result.",
+    "rl_champion": "td3 seed 616"
+  },
+  "config": {
+    "calibration_dir": "results/margin_calibration_context_family_holdout_demo",
+    "champion_dir": "results/rl_td3_fixed_mrr2_shadow_champion",
+    "closed_loop_dir": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
+    "counterfactual_dir": "results/shadow_counterfactual_counterfactual_policy_onset_events_axial_depth_holdout_validated_demo",
+    "hardware_gate_dir": "results/rl_td3_fixed_mrr2_hardware_actuation_gate_demo",
+    "live_shadow_gate_dir": "results/rl_td3_fixed_mrr2_live_shadow_gate_demo",
+    "risk_model_dir": "results/risk_model_hist_gb_interaction_onset_events_axial_depth_holdout_validated_demo",
+    "rl_comparison_dir": "results/rl_td3_harsh_stress_comparison",
+    "rl_shadow_replay_dir": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
+    "shadow_eval_dir": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
+    "shadow_review_gate_dir": "results/rl_td3_fixed_mrr2_shadow_gate_demo",
+    "test_status": "95 passed in 15.58s"
+  },
+  "controller_baselines": {
+    "best_by_risk": {
+      "controller": "sld",
+      "mean_risk_avg": 0.4148174822866001,
+      "mean_risk_worst": 0.5097628350059302,
+      "relative_mrr_avg": 0.9444491410573382,
+      "scenario_count": 4,
+      "shield_rejections_sum": 0.0
+    },
+    "controllers": [
+      {
+        "controller": "cf",
+        "mean_risk_avg": 0.44806056217208706,
+        "mean_risk_worst": 0.5322457230493046,
+        "relative_mrr_avg": 0.9959895833333333,
+        "scenario_count": 4,
+        "shield_rejections_sum": 0.0
+      },
+      {
+        "controller": "fixed",
+        "mean_risk_avg": 0.45577891435336276,
+        "mean_risk_worst": 0.54338702073905,
+        "relative_mrr_avg": 1.0,
+        "scenario_count": 4,
+        "shield_rejections_sum": 0.0
+      },
+      {
+        "controller": "hybrid",
+        "mean_risk_avg": 0.4399847797783497,
+        "mean_risk_worst": 0.5185208535743251,
+        "relative_mrr_avg": 0.9959635416666667,
+        "scenario_count": 4,
+        "shield_rejections_sum": 0.0
+      },
+      {
+        "controller": "mpc",
+        "mean_risk_avg": 0.43881891492538244,
+        "mean_risk_worst": 0.531640223557568,
+        "relative_mrr_avg": 1.043141411923596,
+        "scenario_count": 4,
+        "shield_rejections_sum": 0.0
+      },
+      {
+        "controller": "rule",
+        "mean_risk_avg": 0.46596662972275826,
+        "mean_risk_worst": 0.5424913495526256,
+        "relative_mrr_avg": 1.0237387803819444,
+        "scenario_count": 4,
+        "shield_rejections_sum": 37.0
+      },
+      {
+        "controller": "sld",
+        "mean_risk_avg": 0.4148174822866001,
+        "mean_risk_worst": 0.5097628350059302,
+        "relative_mrr_avg": 0.9444491410573382,
+        "scenario_count": 4,
+        "shield_rejections_sum": 0.0
+      }
+    ],
+    "one_line": "6 controllers compared; best risk `sld`",
+    "path": "results/closed_loop_benchmark_context_calibrated_randomized_stress_demo",
+    "status": "validated_synthetic_benchmark"
+  },
+  "generated_at": "2026-05-02T14:11:29+00:00",
+  "promotion_gates": [
+    {
+      "failed_checks": [],
+      "hardware_actuation_allowed": false,
+      "path": "results/rl_td3_fixed_mrr2_shadow_gate_demo",
+      "profile": "shadow_review",
+      "promotion_level": "shadow_review_candidate",
+      "status": "pass"
+    },
+    {
+      "failed_checks": [
+        "minimum_recommendation_windows",
+        "mean_risk",
+        "max_risk",
+        "unstable_mean_risk",
+        "real_machine_data",
+        "operator_approval_evidence"
+      ],
+      "hardware_actuation_allowed": false,
+      "path": "results/rl_td3_fixed_mrr2_live_shadow_gate_demo",
+      "profile": "live_shadow",
+      "promotion_level": "do_not_promote",
+      "status": "blocked"
+    },
+    {
+      "failed_checks": [
+        "minimum_recommendation_windows",
+        "mean_risk",
+        "max_risk",
+        "unstable_mean_risk",
+        "guard_fallback_fraction",
+        "real_machine_data",
+        "operator_approval_evidence",
+        "hardware_interlock_evidence"
+      ],
+      "hardware_actuation_allowed": false,
+      "path": "results/rl_td3_fixed_mrr2_hardware_actuation_gate_demo",
+      "profile": "hardware_actuation",
+      "promotion_level": "do_not_promote",
+      "status": "blocked"
+    }
+  ],
+  "readiness": {
+    "one_line": "offline shadow review passes; live and hardware gates block as intended",
+    "status": "good_internal_demo_complete"
+  },
+  "risk_model": {
+    "binary_chatter_f1": 0.926605504587156,
+    "binary_chatter_precision": 0.9805825242718447,
+    "binary_chatter_recall": 0.8782608695652174,
+    "event_f1": 0.7272727272727273,
+    "event_mean_detected_lead_time_s": 0.1875,
+    "event_precision": 1.0,
+    "event_recall": 0.5714285714285714,
+    "one_line": "test chatter F1 0.927, event F1 0.727",
+    "path": "results/risk_model_hist_gb_interaction_onset_events_axial_depth_holdout_validated_demo",
+    "status": "validated_synthetic_holdout",
+    "test_accuracy": 0.8392156862745098
+  },
+  "rl": {
+    "champion_path": "results/rl_td3_fixed_mrr2_shadow_champion",
+    "comparison_path": "results/rl_td3_harsh_stress_comparison",
+    "one_line": "TD3 seed 616 selected; avg MRR 1.128",
+    "selected_mean_risk": 0.4762856427530759,
+    "selected_relative_mrr": 1.1277413333639514,
+    "selected_seed": 616,
+    "selected_unstable_risk": 0.5244030300592886,
+    "selection_score": 0.9927853195643606,
+    "status": "shadow_champion_selected",
+    "stress_candidates": [
+      {
+        "guard_fallbacks_sum": 52.0,
+        "is_pareto_frontier": "yes",
+        "mean_risk_avg": 0.4707763248917958,
+        "mean_risk_worst": 0.5539633386469139,
+        "profile": "td3_fixed_mrr2_stress",
+        "relative_mrr_avg": 1.083029812969464,
+        "unstable_risk": 0.5539633386469139
+      },
+      {
+        "guard_fallbacks_sum": 46.0,
+        "is_pareto_frontier": "yes",
+        "mean_risk_avg": 0.4832672340942882,
+        "mean_risk_worst": 0.5632185132732445,
+        "profile": "td3_headroom_mrr3_stress",
+        "relative_mrr_avg": 1.1286482738302486,
+        "unstable_risk": 0.5632185132732445
+      }
+    ]
+  },
+  "rl_shadow_replay": {
+    "action_fraction": 0.4625,
+    "max_risk": 0.746368271098603,
+    "mean_risk": 0.5074141932043789,
+    "one_line": "160 windows, MRR 1.130, shield rejects 0",
+    "path": "results/rl_td3_fixed_mrr2_shadow_replay_demo",
+    "recommendation_windows": 160.0,
+    "relative_mrr_proxy": 1.1301600809618844,
+    "shield_rejections": 0.0,
+    "status": "shadow_only_replay"
+  },
+  "shadow_counterfactual": {
+    "mean_relative_mrr_proxy": 1.0047058823529411,
+    "mean_risk_reduction": 0.0072936688618309405,
+    "mitigated_event_episodes": 0.0,
+    "one_line": "mean risk reduction 0.007, mitigated events 0",
+    "path": "results/shadow_counterfactual_counterfactual_policy_onset_events_axial_depth_holdout_validated_demo",
+    "status": "counterfactual_replayed",
+    "worsened_event_episodes": 0.0
+  },
+  "shadow_risk_policy": {
+    "event_f1": 0.7272727272727273,
+    "event_precision": 1.0,
+    "event_recall": 0.5714285714285714,
+    "one_line": "event F1 0.727, warning fraction 0.400",
+    "path": "results/shadow_policy_onset_events_axial_depth_holdout_validated_demo",
+    "relative_mrr_proxy": 0.9835764705882354,
+    "status": "shadow_policy_evaluated",
+    "warning_fraction": 0.4
+  },
+  "test_status": "95 passed in 15.58s",
+  "validation_boundary": {
+    "not_validated_yet": [
+      "No MTConnect or controller API connection is implemented.",
+      "No synchronized high-rate accelerometer/audio/current data has been ingested.",
+      "No real FRF/cutting-coefficient calibration or real CNC chatter cut has been run through this stack.",
+      "No CNC write path exists or is approved."
+    ],
+    "validated_now": [
+      "Simulator, risk estimator, controller comparisons, shielded RL replay, and promotion gates run end to end.",
+      "The selected TD3 policy passes the offline shadow-review gate.",
+      "The same policy is blocked from live-shadow and hardware-actuation profiles."
+    ]
+  }
+}

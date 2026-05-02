@@ -19,6 +19,7 @@ from chatter_twin.counterfactual import (
     run_stability_margin_shadow_policy,
 )
 from chatter_twin.controllers import make_controller
+from chatter_twin.demo import InternalDemoConfig, write_internal_demo_report
 from chatter_twin.dynamics import simulate_milling
 from chatter_twin.env import ChatterSuppressEnv
 from chatter_twin.features import extract_signal_features
@@ -62,6 +63,7 @@ from chatter_twin.stability import signed_stability_margin
 CONTROLLER_CHOICES = ["fixed", "rule", "sld", "mpc", "cf", "hybrid"]
 SCENARIO_CHOICES = ["stable", "near_boundary", "unstable", "onset"]
 DEFAULT_RANDOMIZATION = DomainRandomizationConfig()
+DEFAULT_INTERNAL_DEMO = InternalDemoConfig()
 
 
 def _add_randomization_args(parser: argparse.ArgumentParser) -> None:
@@ -322,6 +324,22 @@ def main(argv: list[str] | None = None) -> int:
     gate_rl_shadow.add_argument("--max-shield-rejections", type=int, default=None)
     gate_rl_shadow.add_argument("--allow-cnc-writes", action="store_true")
 
+    internal_demo = subparsers.add_parser("internal-demo-report")
+    internal_demo.add_argument("--out", type=Path, required=True)
+    internal_demo.add_argument("--summary-out", type=Path, default=None)
+    internal_demo.add_argument("--calibration-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.calibration_dir)
+    internal_demo.add_argument("--risk-model-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.risk_model_dir)
+    internal_demo.add_argument("--closed-loop-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.closed_loop_dir)
+    internal_demo.add_argument("--rl-comparison-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.rl_comparison_dir)
+    internal_demo.add_argument("--champion-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.champion_dir)
+    internal_demo.add_argument("--rl-shadow-replay-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.rl_shadow_replay_dir)
+    internal_demo.add_argument("--shadow-review-gate-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.shadow_review_gate_dir)
+    internal_demo.add_argument("--live-shadow-gate-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.live_shadow_gate_dir)
+    internal_demo.add_argument("--hardware-gate-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.hardware_gate_dir)
+    internal_demo.add_argument("--shadow-eval-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.shadow_eval_dir)
+    internal_demo.add_argument("--counterfactual-dir", type=Path, default=DEFAULT_INTERNAL_DEMO.counterfactual_dir)
+    internal_demo.add_argument("--test-status", default="")
+
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
     eval_rl.add_argument("--scenarios", default="stable,near_boundary,onset,unstable")
@@ -432,6 +450,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_shadow_rl_policy(args)
         case "gate-rl-shadow":
             return _cmd_gate_rl_shadow(args)
+        case "internal-demo-report":
+            return _cmd_internal_demo_report(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1019,6 +1039,42 @@ def _cmd_gate_rl_shadow(args: argparse.Namespace) -> int:
         )
     )
     return 0 if payload["decision"]["passed"] else 2
+
+
+def _cmd_internal_demo_report(args: argparse.Namespace) -> int:
+    payload = write_internal_demo_report(
+        out_path=args.out,
+        summary_path=args.summary_out,
+        config=InternalDemoConfig(
+            calibration_dir=args.calibration_dir,
+            risk_model_dir=args.risk_model_dir,
+            closed_loop_dir=args.closed_loop_dir,
+            rl_comparison_dir=args.rl_comparison_dir,
+            champion_dir=args.champion_dir,
+            rl_shadow_replay_dir=args.rl_shadow_replay_dir,
+            shadow_review_gate_dir=args.shadow_review_gate_dir,
+            live_shadow_gate_dir=args.live_shadow_gate_dir,
+            hardware_gate_dir=args.hardware_gate_dir,
+            shadow_eval_dir=args.shadow_eval_dir,
+            counterfactual_dir=args.counterfactual_dir,
+            test_status=args.test_status,
+        ),
+    )
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "summary_out": str(args.summary_out) if args.summary_out is not None else None,
+                "stage": payload["conclusion"]["current_stage"],
+                "readiness": payload["readiness"]["status"],
+                "hardware_ready": payload["conclusion"]["hardware_ready"],
+                "gate_statuses": {row["profile"]: row["status"] for row in payload["promotion_gates"]},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _cmd_eval_rl_run(args: argparse.Namespace) -> int:

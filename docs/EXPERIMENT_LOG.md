@@ -2970,3 +2970,43 @@ Lesson: the selected TD3 policy now has a reproducible promotion ladder. It is
 reviewable offline, but correctly blocked from live-shadow and hardware
 promotion because it is synthetic, below the stricter sample-count bar, and too
 risky for those profiles.
+
+## 2026-05-02 - Good Internal Demo Report
+
+Added `chatter-twin internal-demo-report`, which collects the current ignored
+`results/` artifacts into a tracked internal demo report and JSON summary.
+This gives the project a single review artifact instead of requiring someone
+to open calibration reports, risk-model metrics, RL comparisons, policy cards,
+shadow replay outputs, and gate reports one by one.
+
+Run:
+
+```bash
+rtk uv run chatter-twin internal-demo-report \
+  --out docs/INTERNAL_DEMO_REPORT.md \
+  --summary-out docs/INTERNAL_DEMO_SUMMARY.json \
+  --test-status "95 passed in 15.58s"
+```
+
+Report outputs:
+
+| Artifact | Output |
+|---|---|
+| Internal demo report | `docs/INTERNAL_DEMO_REPORT.md` |
+| Machine-readable summary | `docs/INTERNAL_DEMO_SUMMARY.json` |
+
+Demo conclusion:
+
+| Field | Value |
+|---|---|
+| Current stage | `offline_shadow_review` |
+| Readiness | `good_internal_demo_complete` |
+| RL champion | `td3 seed 616` |
+| Shadow-review gate | `pass` |
+| Live-shadow gate | `blocked` |
+| Hardware-actuation gate | `blocked` |
+| Hardware ready | `false` |
+
+Lesson: the good internal demo is now complete as a software artifact. It shows
+the full offline decision stack working end to end and makes the boundary clear:
+real CNC validation is still the next result barrier.
