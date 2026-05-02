@@ -10,8 +10,10 @@ from chatter_twin.cli import main
 from chatter_twin.datasets import (
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
+    KITMatIngestConfig,
     discover_icnc_csv_sources,
     ingest_kit_industrial_dataset,
+    ingest_kit_mat_dataset,
     ingest_icnc_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
@@ -199,16 +201,36 @@ def test_inspect_kit_synchronized_mat_directory(tmp_path: Path):
     source = tmp_path / "Data"
     _write_minimal_kit_source(source)
     mat_path = source / "Dataset" / "Injection mold" / "IM-02F-A01" / "processed_data" / "IM-02F-A01_synchronized.mat"
-    with h5py.File(mat_path, "w") as handle:
-        handle.create_dataset("acceleration/x", data=np.arange(128, dtype=np.float64))
-        handle.create_dataset("force/Fx", data=np.arange(64, dtype=np.float64))
+    _write_minimal_kit_mat(h5py, mat_path, ["xAcceleration", "yAcceleration"])
 
     payload = inspect_kit_synchronized_mat(source=source, trial="IM-02F-A01", max_datasets=10)
 
     paths = {item["path"] for item in payload["datasets"]}
-    assert "acceleration/x" in paths
-    assert "force/Fx" in paths
-    assert payload["candidate_numeric_time_series"]
+    assert "#refs#/j/data" in paths
+    assert "#refs#/j/varNames" in paths
+
+
+def test_ingest_kit_mat_directory(tmp_path: Path):
+    h5py = pytest.importorskip("h5py")
+    source = tmp_path / "Data"
+    _write_minimal_kit_source(source)
+    for trial in ("IM-01F", "IM-02F-A01"):
+        mat_path = source / "Dataset" / "Injection mold" / trial / "processed_data" / f"{trial}_synchronized.mat"
+        _write_minimal_kit_mat(h5py, mat_path, ["xAcceleration", "yAcceleration"])
+
+    payload = ingest_kit_mat_dataset(
+        source=source,
+        out_dir=tmp_path / "kit_mat_out",
+        trials=["IM-01F", "IM-02F-A01"],
+        config=KITMatIngestConfig(window_s=0.4, stride_s=0.4, horizon_s=0.8),
+    )
+
+    assert payload["manifest"]["total_windows"] == 4
+    assert payload["manifest"]["sample_rate_hz"] == 10.0
+    assert payload["manifest"]["label_counts"] == {"slight": 2, "stable": 2}
+    data = np.load(tmp_path / "kit_mat_out" / "dataset.npz")
+    assert data["sensor_windows"].shape == (4, 4, 2)
+    assert data["channel_names"].tolist() == ["xAcceleration", "yAcceleration"]
 
 
 def _write_vector_icnc_csv(path: Path) -> None:
@@ -359,6 +381,36 @@ def _write_minimal_xlsx(path: Path, rows: list[list[str]]) -> None:
             + "".join(sheet_rows)
             + "</sheetData></worksheet>",
         )
+
+
+def _write_minimal_kit_mat(h5py: object, path: Path, signal_names: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ref_dtype = h5py.special_dtype(ref=h5py.Reference)
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("messdaten_sync", data=np.array([[0, 2, 1, 1, 1, 3]], dtype=np.uint32))
+        refs = handle.create_group("#refs#")
+        table = refs.create_group("j")
+        data_refs = np.empty((len(signal_names), 1), dtype=ref_dtype)
+        name_refs = np.empty((len(signal_names), 1), dtype=ref_dtype)
+        unit_refs = np.empty((len(signal_names), 1), dtype=ref_dtype)
+        desc_refs = np.empty((len(signal_names), 1), dtype=ref_dtype)
+        for idx, name in enumerate(signal_names):
+            values = np.arange(8, dtype=np.float64).reshape(1, -1) + idx
+            data_refs[idx, 0] = refs.create_dataset(f"data_{idx}", data=values).ref
+            name_refs[idx, 0] = _h5_char_dataset(refs, f"name_{idx}", name).ref
+            unit_refs[idx, 0] = _h5_char_dataset(refs, f"unit_{idx}", "g").ref
+            desc_refs[idx, 0] = _h5_char_dataset(refs, f"desc_{idx}", name).ref
+        table.create_dataset("data", data=data_refs)
+        table.create_dataset("varNames", data=name_refs)
+        table.create_dataset("varUnits", data=unit_refs)
+        table.create_dataset("varDescriptions", data=desc_refs)
+        row_times = table.create_group("rowTimes")
+        row_times.create_dataset("sampleRate", data=np.array([[10.0]], dtype=np.float64))
+
+
+def _h5_char_dataset(group: object, name: str, value: str) -> object:
+    data = np.array([ord(char) for char in value], dtype=np.uint16).reshape(-1, 1)
+    return group.create_dataset(name, data=data)
 
 
 def _write_expanded_icnc_csv(path: Path) -> None:

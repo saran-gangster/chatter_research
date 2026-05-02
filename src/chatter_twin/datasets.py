@@ -107,6 +107,31 @@ class KITIndustrialIngestConfig:
             raise ValueError("max_windows must be at least 1")
 
 
+@dataclass(frozen=True)
+class KITMatIngestConfig:
+    window_s: float = 0.10
+    stride_s: float = 0.05
+    horizon_s: float = 0.25
+    signal_names: tuple[str, str] = ("xAcceleration", "yAcceleration")
+    include_other_anomalies: bool = False
+    max_windows: int | None = None
+    max_samples_per_trial: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0:
+            raise ValueError("window_s must be positive")
+        if self.stride_s <= 0:
+            raise ValueError("stride_s must be positive")
+        if self.horizon_s <= 0:
+            raise ValueError("horizon_s must be positive")
+        if len(self.signal_names) != 2:
+            raise ValueError("signal_names must contain exactly two signals")
+        if self.max_windows is not None and self.max_windows < 1:
+            raise ValueError("max_windows must be at least 1")
+        if self.max_samples_per_trial is not None and self.max_samples_per_trial < 4:
+            raise ValueError("max_samples_per_trial must be at least 4")
+
+
 def icnc_source_manifest() -> dict[str, object]:
     return {
         "dataset": "i-CNC Use Case: Vibration data and associated Chatter indication during milling process with CNC machines",
@@ -379,6 +404,73 @@ def ingest_kit_industrial_dataset(
     manifest = _kit_manifest(records, summaries, config, sensor_windows)
     _write_real_replay_dataset(out_dir, records, sensor_windows, manifest)
     _write_kit_readme(out_dir / "README.md", manifest, summaries, config)
+    return {
+        "manifest": asdict(manifest),
+        "sources": summaries,
+        "out_dir": str(out_dir),
+        "artifacts": list(manifest.artifacts),
+    }
+
+
+def ingest_kit_mat_dataset(
+    *,
+    source: Path,
+    out_dir: Path,
+    trials: list[str] | None = None,
+    config: KITMatIngestConfig | None = None,
+) -> dict[str, object]:
+    """Import KIT synchronized MATLAB acceleration/force replay windows."""
+
+    config = config or KITMatIngestConfig()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = {trial.strip() for trial in trials or [] if trial.strip()}
+    windows: list[NDArray[np.float64]] = []
+    records: list[WindowRecord] = []
+    summaries: list[dict[str, object]] = []
+
+    with _open_kit_source(source) as kit:
+        doe_trials = _kit_doe_trials(kit)
+        trial_by_id = {str(trial["trial"]): trial for trial in doe_trials}
+        if selected:
+            missing = sorted(selected - set(trial_by_id))
+            if missing:
+                raise ValueError(f"KIT trials not found in DoE: {', '.join(missing)}")
+            candidates = [trial_by_id[trial_id] for trial_id in sorted(selected)]
+        else:
+            candidates = [
+                trial
+                for trial in doe_trials
+                if _kit_comment_to_label(trial.get("comment", "")) != "unknown"
+                or bool(config.include_other_anomalies)
+            ]
+
+        for episode_id, trial in enumerate(candidates):
+            if config.max_windows is not None and len(records) >= config.max_windows:
+                break
+            label = _kit_comment_to_label(trial.get("comment", ""))
+            if label == "unknown" and not config.include_other_anomalies:
+                continue
+            remaining = None if config.max_windows is None else config.max_windows - len(records)
+            trial_windows, trial_records, summary = _ingest_kit_mat_trial(
+                kit,
+                trial=trial,
+                label=label,
+                episode=episode_id,
+                starting_window_id=len(records),
+                config=config,
+                max_windows=remaining,
+            )
+            windows.extend(trial_windows)
+            records.extend(trial_records)
+            summaries.append(summary)
+
+    if not records:
+        raise ValueError("No KIT MAT replay windows produced; select at least one stable or chatter trial")
+
+    sensor_windows = np.stack(windows).astype(np.float32)
+    manifest = _kit_mat_manifest(records, summaries, config, sensor_windows)
+    _write_real_replay_dataset(out_dir, records, sensor_windows, manifest)
+    _write_kit_mat_readme(out_dir / "README.md", manifest, summaries, config)
     return {
         "manifest": asdict(manifest),
         "sources": summaries,
@@ -719,6 +811,136 @@ def _ingest_kit_trial(
     )
     records = attach_horizon_targets(records, HorizonConfig(horizon_s=config.horizon_s))
     return windows, records, _kit_trial_summary(trial, member, rows_read, len(records), label, config)
+
+
+def _ingest_kit_mat_trial(
+    kit: _KITSource,
+    *,
+    trial: dict[str, object],
+    label: str,
+    episode: int,
+    starting_window_id: int,
+    config: KITMatIngestConfig,
+    max_windows: int | None,
+) -> tuple[list[NDArray[np.float64]], list[WindowRecord], dict[str, object]]:
+    member = _kit_synchronized_mat_member(trial)
+    with _open_kit_mat_h5(kit, member) as handle:
+        table = _read_kit_mat_timetable(handle)
+        missing = [name for name in config.signal_names if name not in table["signals"]]
+        if missing:
+            available = ", ".join(sorted(table["signals"]))
+            raise ValueError(f"{member} is missing MAT signals {', '.join(missing)}; available: {available}")
+        channels = [np.asarray(table["signals"][name], dtype=float).reshape(-1) for name in config.signal_names]
+        sample_count = min(channel.size for channel in channels)
+        if config.max_samples_per_trial is not None:
+            sample_count = min(sample_count, config.max_samples_per_trial)
+        signal = np.column_stack([channel[:sample_count] for channel in channels])
+        sample_rate_hz = float(table["sample_rate_hz"])
+        available_signals = sorted(table["signals"])
+        units = {name: table["units"].get(name, "") for name in config.signal_names}
+
+    if signal.shape[0] < 4:
+        return [], [], _kit_mat_trial_summary(trial, member, 0, 0, label, sample_rate_hz, units, available_signals, config)
+
+    slice_config = ICNCIngestConfig(
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        horizon_s=config.horizon_s,
+        flute_count=max(1, int(trial.get("flutes") or 1)),
+        modal_frequency_hz=None,
+        default_sample_rate_hz=sample_rate_hz,
+        default_spindle_rpm=float(trial.get("spindle_rpm") or 1.0),
+        default_feed_per_tooth_m=max(float(trial.get("feed_per_tooth_mm") or 0.0) / 1_000.0, 1.0e-9),
+    )
+    windows, records, _ = _slice_icnc_package(
+        sensor_signal=signal,
+        scenario=str(trial["trial"]),
+        episode=episode,
+        package_index=0,
+        starting_window_id=starting_window_id,
+        starting_window_index=0,
+        sample_rate_hz=sample_rate_hz,
+        spindle_rpm=max(float(trial.get("spindle_rpm") or 1.0), 1.0),
+        label=label,
+        previous=_TemporalState(),
+        config=slice_config,
+        max_windows=max_windows,
+        feed_per_tooth_m=max(float(trial.get("feed_per_tooth_mm") or 0.0) / 1_000.0, 1.0e-9),
+        axial_depth_m=float(trial.get("axial_depth_mm") or 0.0) / 1_000.0,
+        radial_depth_m=float(trial.get("radial_depth_mm") or 0.0) / 1_000.0,
+    )
+    records = attach_horizon_targets(records, HorizonConfig(horizon_s=config.horizon_s))
+    return windows, records, _kit_mat_trial_summary(
+        trial,
+        member,
+        signal.shape[0],
+        len(records),
+        label,
+        sample_rate_hz,
+        units,
+        available_signals,
+        config,
+    )
+
+
+def _read_kit_mat_timetable(handle: object) -> dict[str, object]:
+    import h5py
+
+    table = handle["#refs#/j"]
+    names = [_h5_deref_string(handle, ref) for ref in np.asarray(table["varNames"]).reshape(-1)]
+    units = [_h5_deref_string(handle, ref) for ref in np.asarray(table["varUnits"]).reshape(-1)]
+    descriptions = [_h5_deref_string(handle, ref) for ref in np.asarray(table["varDescriptions"]).reshape(-1)]
+    refs = np.asarray(table["data"]).reshape(-1)
+    signals: dict[str, NDArray[np.float64]] = {}
+    signal_units: dict[str, str] = {}
+    signal_descriptions: dict[str, str] = {}
+    for name, unit, description, ref in zip(names, units, descriptions, refs, strict=False):
+        obj = handle[ref]
+        if isinstance(obj, h5py.Dataset) and obj.dtype.kind in {"f", "i", "u"}:
+            signals[name] = np.asarray(obj, dtype=float).reshape(-1)
+            signal_units[name] = unit
+            signal_descriptions[name] = description
+    sample_rate = float(np.asarray(table["rowTimes"]["sampleRate"]).reshape(-1)[0])
+    return {
+        "signals": signals,
+        "units": signal_units,
+        "descriptions": signal_descriptions,
+        "sample_rate_hz": sample_rate,
+    }
+
+
+def _h5_deref_string(handle: object, ref: object) -> str:
+    array = np.asarray(handle[ref])
+    if array.dtype.kind not in {"u", "i"}:
+        return ""
+    return "".join(chr(int(value)) for value in array.reshape(-1) if int(value) != 0)
+
+
+def _kit_mat_trial_summary(
+    trial: dict[str, object],
+    member: str,
+    samples_read: int,
+    windows: int,
+    label: str,
+    sample_rate_hz: float,
+    units: dict[str, str],
+    available_signals: list[str],
+    config: KITMatIngestConfig,
+) -> dict[str, object]:
+    return {
+        "trial": trial["trial"],
+        "component": trial["component"],
+        "comment": trial.get("comment", ""),
+        "label": label,
+        "member": member,
+        "samples_read": samples_read,
+        "windows": windows,
+        "signal_names": list(config.signal_names),
+        "signal_units": units,
+        "sample_rate_hz": sample_rate_hz,
+        "available_signal_count": len(available_signals),
+        "available_signals_preview": available_signals[:20],
+    }
 
 
 def _kit_trial_summary(
@@ -1156,6 +1378,40 @@ def _kit_manifest(
     )
 
 
+def _kit_mat_manifest(
+    records: list[WindowRecord],
+    source_summaries: list[dict[str, object]],
+    config: KITMatIngestConfig,
+    sensor_windows: NDArray[np.float32],
+) -> DatasetManifest:
+    counts = Counter(record.label for record in records)
+    return DatasetManifest(
+        schema_version="chatter-window-v5",
+        sample_rate_hz=result_sample_rate(records, sensor_windows),
+        window_s=config.window_s,
+        stride_s=config.stride_s,
+        channel_names=tuple(config.signal_names),
+        scenarios=tuple(str(summary["trial"]) for summary in source_summaries),
+        episodes_per_scenario=1,
+        total_windows=len(records),
+        label_counts=dict(sorted(counts.items())),
+        domain_randomization={
+            "enabled": False,
+            "source": "real_kit_industrial_radar_mat",
+        },
+        sampling_strategy={
+            "dataset": "kit_industrial_radar_hvvwn1kfwf7qt48z",
+            "max_windows": config.max_windows,
+            "max_samples_per_trial": config.max_samples_per_trial,
+            "source_files": source_summaries,
+            "modality": "synchronized MATLAB timetable",
+            "note": "DoE comments provide coarse trial-level labels; no time-local onset labels are available yet.",
+        },
+        horizon={"horizon_s": config.horizon_s},
+        artifacts=("dataset.npz", "windows.csv", "manifest.json", "README.md"),
+    )
+
+
 def _write_real_replay_dataset(
     out_dir: Path,
     records: list[WindowRecord],
@@ -1257,6 +1513,49 @@ def _write_icnc_readme(path: Path, manifest: DatasetManifest, source_summaries: 
             "- `status` is treated as the label supplied by the dataset authors' AI chatter indicator.",
             "- The dataset does not include axial/radial depth, feed, tool, FRF, or cutting coefficients, so physics-margin fields are placeholders.",
             "- Use this for signal-estimator validation and domain-shift checks, not for claiming a calibrated process-dynamics twin.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_kit_mat_readme(
+    path: Path,
+    manifest: DatasetManifest,
+    source_summaries: list[dict[str, object]],
+    config: KITMatIngestConfig,
+) -> None:
+    lines = [
+        "# KIT Industrial Synchronized MAT Replay Dataset",
+        "",
+        "Imported from RADAR/KIT synchronized MATLAB timetables into the local chatter replay schema.",
+        "",
+        f"Total windows: `{manifest.total_windows}`",
+        f"Sample rate: `{manifest.sample_rate_hz:.1f} Hz`",
+        f"Window/stride: `{manifest.window_s:.3f}s / {manifest.stride_s:.3f}s`",
+        f"Horizon target: `{manifest.horizon['horizon_s']:.3f}s`",
+        f"Signals: `{config.signal_names[0]}`, `{config.signal_names[1]}`",
+        "",
+        "## Label Counts",
+        "",
+        "| Label | Count |",
+        "|---|---:|",
+    ]
+    for label, count in manifest.label_counts.items():
+        lines.append(f"| {label} | {count} |")
+    lines.extend(["", "## Trials", "", "| Trial | Component | Label | Comment | Samples | Windows |", "|---|---|---|---|---:|---:|"])
+    for source in source_summaries:
+        lines.append(
+            f"| `{source['trial']}` | {source['component']} | {source['label']} | "
+            f"{source['comment']} | {source['samples_read']} | {source['windows']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Caveats",
+            "",
+            "- Labels are still coarse DoE trial labels, not time-local onset annotations.",
+            "- Use this for high-rate signal validation and pseudo-labeling experiments before claiming early warning.",
             "",
         ]
     )

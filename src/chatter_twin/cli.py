@@ -22,9 +22,11 @@ from chatter_twin.datasets import (
     ICNC_FILENAME,
     ICNCIngestConfig,
     KITIndustrialIngestConfig,
+    KITMatIngestConfig,
     KIT_INDUSTRIAL_FILENAME,
     download_icnc_dataset,
     ingest_kit_industrial_dataset,
+    ingest_kit_mat_dataset,
     inspect_kit_industrial_dataset,
     inspect_kit_synchronized_mat,
     ingest_icnc_dataset,
@@ -401,6 +403,18 @@ def main(argv: list[str] | None = None) -> int:
     ingest_kit.add_argument("--include-other-anomalies", action="store_true")
     ingest_kit.add_argument("--max-windows", type=int, default=None)
 
+    ingest_kit_mat = subparsers.add_parser("ingest-kit-mat")
+    ingest_kit_mat.add_argument("--source", type=Path, required=True)
+    ingest_kit_mat.add_argument("--out", type=Path, required=True)
+    ingest_kit_mat.add_argument("--trials", default="IM-01F,IM-02F-A01")
+    ingest_kit_mat.add_argument("--window", type=float, default=0.10)
+    ingest_kit_mat.add_argument("--stride", type=float, default=0.05)
+    ingest_kit_mat.add_argument("--horizon", type=float, default=0.25)
+    ingest_kit_mat.add_argument("--signal-names", default="xAcceleration,yAcceleration")
+    ingest_kit_mat.add_argument("--include-other-anomalies", action="store_true")
+    ingest_kit_mat.add_argument("--max-windows", type=int, default=None)
+    ingest_kit_mat.add_argument("--max-samples-per-trial", type=int, default=None)
+
     eval_rl = subparsers.add_parser("eval-rl-run")
     eval_rl.add_argument("--run-dir", type=Path, required=True)
     eval_rl.add_argument("--scenarios", default="stable,near_boundary,onset,unstable")
@@ -527,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_ingest_icnc(args)
         case "ingest-kit-industrial":
             return _cmd_ingest_kit_industrial(args)
+        case "ingest-kit-mat":
+            return _cmd_ingest_kit_mat(args)
         case "eval-rl-run":
             return _cmd_eval_rl_run(args)
         case "shadow-eval":
@@ -1239,6 +1255,40 @@ def _cmd_ingest_kit_industrial(args: argparse.Namespace) -> int:
             signal_columns=signal_columns,  # type: ignore[arg-type]
             include_other_anomalies=args.include_other_anomalies,
             max_windows=args.max_windows,
+        ),
+    )
+    manifest = payload["manifest"]
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "schema_version": manifest["schema_version"],
+                "total_windows": manifest["total_windows"],
+                "label_counts": manifest["label_counts"],
+                "sources": payload["sources"],
+                "artifacts": payload["artifacts"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_ingest_kit_mat(args: argparse.Namespace) -> int:
+    signal_names = tuple(name.strip() for name in args.signal_names.split(",") if name.strip())
+    payload = ingest_kit_mat_dataset(
+        source=args.source,
+        out_dir=args.out,
+        trials=[trial.strip() for trial in args.trials.split(",") if trial.strip()],
+        config=KITMatIngestConfig(
+            window_s=args.window,
+            stride_s=args.stride,
+            horizon_s=args.horizon,
+            signal_names=signal_names,  # type: ignore[arg-type]
+            include_other_anomalies=args.include_other_anomalies,
+            max_windows=args.max_windows,
+            max_samples_per_trial=args.max_samples_per_trial,
         ),
     )
     manifest = payload["manifest"]
